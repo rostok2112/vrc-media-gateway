@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.env
+
+# Logs
+logs/
+*.log
+
+# Media output
+html/
+html/streams/
+input/
+output/
+temp/
+
+# Secrets
+cookies.txt
+
+# IDE
+.vscode/
+.idea/

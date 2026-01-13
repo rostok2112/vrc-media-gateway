@@ -37,17 +37,6 @@ def run_cmd(cmd):
         raise RuntimeError(f"cmd failed: {' '.join(cmd)}\nstdout:{p.stdout}\nstderr:{p.stderr}")
     return p
 
-def wait_hls_ready(out_dir: Path, timeout=30):
-    m3u8 = out_dir / "index.m3u8"
-    start = time.time()
-    while time.time() - start < timeout:
-        if m3u8.exists() and m3u8.stat().st_size > 200:
-            ts = sorted(out_dir.glob("*.ts"))
-            if ts and any(t.stat().st_size > 100 for t in ts):
-                return True
-        time.sleep(0.4)
-    return False
-
 def extract_image_from_telegram_html(html: str, base_url: str = None):
     """
     Попытаться найти картинку в HTML тг поста.
@@ -183,13 +172,6 @@ def stream_tg_image(url: str = Query(..., description="Telegram post URL e.g. ht
     run_cmd(hls_cmd)
 
     rewrite_m3u8(m3u8, img_id)
-
-    try:
-        video_tmp.unlink()
-    except Exception:
-        pass
-
-    ok = wait_hls_ready(out_dir, timeout=25)
 
     return Response(
         content=m3u8.read_text(),

@@ -37,7 +37,7 @@ https://<your-domain>.trycloudflare.com/api/stream-sc?url=<soundcloud-link>
 
 Install Python deps:
 ```bash
-pip install fastapi uvicorn
+pip install fastapi uvicorn requests
 ```
 
 ---
@@ -62,9 +62,10 @@ http://127.0.0.1:5000/api/stream-file?name=your.mp4  # FastAPI local test
 ---
 
 ## API endpoints (examples)
-- `GET /api/stream-sc?url=<soundcloud_url>` - download SoundCloud track, convert to HLS, return playable URL
+- `GET /api/stream-sc?url=<soundcloud_url>` - download SoundCloud track, convert to HLS
 - `GET /api/stream-yt?url=<youtube_url>` - download YouTube (uses cookies.txt if present), convert to HLS
-- `GET /api/stream-file?name=<filename>` - convert a local file placed in `videos/`
+- `GET /api/stream-tg-image?name=<filename>` - download an image from Telegram, creating static video and convert to HLS
+- `GET /api/stream-file?name=<filename>` - convert a local file placed in `input/` to HLS
 
 ### Behavior
 - On first request the server will download/convert - expect ~10-30s (depends on file size and network). The result is cached under `html/streams/<id>/` for subsequent instant access.
@@ -84,6 +85,3 @@ ffplay -i http://127.0.0.1:8080/streams/<id>/index.m3u8
 5. If you use Cloudflare Tunnel, try bypassing it for debugging (`http://127.0.0.1:8080/...`) to ensure CF cache or rules aren't interfering.
 
 ---
-
-## Development notes
-- Use `X-Accel-Redirect` in production for best compatibility and performance.

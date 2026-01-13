@@ -1,10 +1,13 @@
 import hashlib
+import re
+import time
+import requests
 import subprocess
 from subprocess import CalledProcessError
 from pathlib import Path
 import urllib.parse as urlparse
-from fastapi import FastAPI, Query
-from fastapi.responses import RedirectResponse
+from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi.responses import FileResponse, RedirectResponse
 
 
 BASE = Path(__file__).resolve().parents[1]
@@ -17,6 +20,181 @@ FFMPEG = "ffmpeg.exe"
 
 
 app = FastAPI()
+
+def rewrite_m3u8(m3u8: Path, stream_id: str):
+    text = m3u8.read_text(encoding="utf-8")
+    out = []
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            out.append(line)
+        else:
+            out.append(f"/api/stream_segment/{stream_id}/{line.lstrip('./')}")
+    m3u8.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+def run_cmd(cmd):
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0:
+        raise RuntimeError(f"cmd failed: {' '.join(cmd)}\nstdout:{p.stdout}\nstderr:{p.stderr}")
+    return p
+
+def wait_hls_ready(out_dir: Path, timeout=30):
+    m3u8 = out_dir / "index.m3u8"
+    start = time.time()
+    while time.time() - start < timeout:
+        if m3u8.exists() and m3u8.stat().st_size > 200:
+            ts = sorted(out_dir.glob("*.ts"))
+            if ts and any(t.stat().st_size > 100 for t in ts):
+                return True
+        time.sleep(0.4)
+    return False
+
+def extract_image_from_telegram_html(html: str, base_url: str = None):
+    """
+    Попытаться найти картинку в HTML тг поста.
+    Ищем meta property="og:image", twitter:image, а также src в <img> и data-src в шаблонах.
+    """
+    # og:image
+    m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, flags=re.I)
+    if not m:
+        m = re.search(r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']', html, flags=re.I)
+    if not m:
+        m = re.search(r'<img[^>]+class=["\'][^"\']*tgme_widget_message_photo_wrap[^"\']*["\'][^>]+src=["\']([^"\']+)["\']', html, flags=re.I)
+    if not m:
+        # data-src или other img tags
+        m = re.search(r'data-src=["\']([^"\']+)["\']', html, flags=re.I)
+    if not m:
+        m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', html, flags=re.I)
+    if not m:
+        return None
+    img = m.group(1)
+    if base_url and img.startswith("/"):
+        return urlparse.urljoin(base_url, img)
+    return img
+
+def try_fetch_telegram_post(url: str, timeout=15):
+    """
+    Получить HTML поста Telegram. Попробуем 3 варианта:
+     - оригинальный URL
+     - заменим host на t.me/s/CHANNEL/ID (public view)
+     - добавим headers (User-Agent)
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36"
+    }
+    # try original
+    try:
+        r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+        r.raise_for_status()
+        return r.text, r.url
+    except Exception:
+        pass
+
+    # if /<channel>/<id> -> try /s/<channel>/<id>
+    p = urlparse(url)
+    if p.netloc.endswith("t.me"):
+        parts = p.path.strip("/").split("/")
+        if len(parts) >= 2:
+            channel, msg = parts[0], parts[1]
+            alt = f"https://t.me/s/{channel}/{msg}"
+            try:
+                r = requests.get(alt, headers=headers, timeout=timeout, allow_redirects=True)
+                r.raise_for_status()
+                return r.text, r.url
+            except Exception:
+                pass
+
+    # final fail
+    raise HTTPException(status_code=400, detail="can't fetch telegram post HTML; maybe it's private or blocked")
+
+@app.get("/api/stream-tg-image")
+def stream_tg_image(url: str = Query(..., description="Telegram post URL e.g. https://t.me/channel/1234"),
+                 duration: int = Query(300, description="duration seconds"),
+                 width: int = Query(1280), height: int = Query(720)):
+    # validate
+    if duration <= 0 or duration > 3600:
+        raise HTTPException(status_code=400, detail="duration out of range")
+    # fetch html
+    html, final_url = try_fetch_telegram_post(url)
+    img_url = extract_image_from_telegram_html(html, base_url=final_url)
+    if not img_url:
+        raise HTTPException(status_code=404, detail="no image found in telegram post")
+
+    # normalize img_url: sometimes it is //... or relative
+    if img_url.startswith("//"):
+        img_url = "https:" + img_url
+    img_id = hashlib.md5((img_url + f"{duration}{width}x{height}").encode()).hexdigest()
+    out_dir = STREAMS / img_id
+    m3u8 = out_dir / "index.m3u8"
+    if m3u8.exists():
+        return Response(status_code=200, headers={
+            "X-Accel-Redirect": f"/streams/{img_id}/index.m3u8",
+            "Content-Type": "application/vnd.apple.mpegurl"
+        })
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tmp_img = out_dir / "src.jpg"
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        with requests.get(img_url, stream=True, headers=headers, timeout=15) as r:
+            r.raise_for_status()
+            total = 0
+            with tmp_img.open("wb") as f:
+                for chunk in r.iter_content(8192):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > 8 * 1024 * 1024:
+                        raise HTTPException(status_code=400, detail="image too large")
+                    f.write(chunk)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"failed to download image: {e}")
+
+    video_tmp = out_dir / "video.mp4"
+    cmd = [
+        FFMPEG,
+        "-y",
+        "-loop", "1",
+        "-i", str(tmp_img),
+        "-f", "lavfi",
+        "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+        "-c:v", "libx264",
+        "-t", str(duration),
+        "-pix_fmt", "yuv420p",
+        "-vf", f"scale={width}:{height}:flags=lanczos",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-shortest",
+        str(video_tmp)
+    ]
+    run_cmd(cmd)
+
+    hls_cmd = [
+        FFMPEG,
+        "-y",
+        "-i", str(video_tmp),
+        "-c:v", "copy",
+        "-c:a", "copy",
+        "-f", "hls",
+        "-hls_time", "4",
+        "-hls_list_size", "0",
+        "-hls_playlist_type", "vod",
+        str(m3u8)
+    ]
+    run_cmd(hls_cmd)
+
+    rewrite_m3u8(m3u8, img_id)
+
+    try:
+        video_tmp.unlink()
+    except Exception:
+        pass
+
+    ok = wait_hls_ready(out_dir, timeout=25)
+
+    return Response(
+        content=m3u8.read_text(),
+        media_type="application/vnd.apple.mpegurl"
+    )
 
 @app.get("/api/stream-sc")
 def stream_sc(url: str = Query(...)):
@@ -48,9 +226,11 @@ def stream_sc(url: str = Query(...)):
             str(m3u8)
         ], check=True)
 
-    return RedirectResponse(
-        url=f"/streams/{track_id}/index.m3u8",
-        status_code=302
+        rewrite_m3u8(m3u8, track_id)
+
+    return Response(
+        content=m3u8.read_text(),
+        media_type="application/vnd.apple.mpegurl"
     )
 
 def normalize_yt_url(url: str) -> str:
@@ -137,7 +317,23 @@ def stream_yt(url: str = Query(...)):
             str(m3u8)
         ], check=True)
 
-    return RedirectResponse(
-        url=f"/streams/{video_id}/index.m3u8",
-        status_code=302
+        rewrite_m3u8(m3u8, video_id)
+
+    return Response(
+        content=m3u8.read_text(),
+        media_type="application/vnd.apple.mpegurl"
+    )
+
+@app.get("/api/stream_segment/{stream_id}/{filename}")
+def stream_segment(stream_id: str, filename: str):
+    path = STREAMS / stream_id / filename
+    if not path.exists():
+        raise HTTPException(status_code=404)
+
+    if filename.endswith(".ts"):
+        return FileResponse(path, media_type="video/mp2t")
+
+    return FileResponse(
+        path,
+        media_type="application/vnd.apple.mpegurl"
     )

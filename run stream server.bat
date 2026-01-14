@@ -1,29 +1,33 @@
 @echo off
-cd /d "%~dp0"
+chcp 65001 >nul
 
-echo ==================================
-echo Launching SoundCloud HLS stack
-echo ==================================
+echo ===============================
+echo VRChat Media Gateway
+echo ===============================
+echo.
 
-REM ---- NGINX ----
-echo Starting NGINX...
-taskkill /F /IM nginx.exe >nul 2>&1
-start "NGINX" cmd /k nginx.exe -p "%cd%" -c main.conf
+REM nginx (как было)
+start "nginx" cmd /k nginx -c main.conf
 
-REM ---- FASTAPI ----
-echo Starting FastAPI...
-start "FastAPI API" cmd /k ^
-cd /d "%cd%\api" ^& uvicorn app:app --host 127.0.0.1 --port 5000
+REM FastAPI (единственное изменение под новую структуру)
+start "api" cmd /k uvicorn api.main:app --host 127.0.0.1 --port 5000
 
-REM ---- CLOUDFLARE ----
-echo Starting Cloudflare Tunnel...
-start "Cloudflare Tunnel" cmd /k cloudflared tunnel --url http://localhost:8080
+REM cloudflared QUICK TUNNEL (КАК БЫЛО)
+start "cloudflared" cmd /k cloudflared tunnel --url http://127.0.0.1:8080
 
 echo.
-echo ==================================
-echo ALL SERVICES STARTED
-echo ==================================
-echo Use URL:
-echo https://XXXX.trycloudflare.com/api/stream?url=SC_LINK
+echo ===============================
+echo Public API (after cloudflared starts):
 echo.
+echo SoundCloud:
+echo https://XXXX.trycloudflare.com/api/stream-sc?url=https://on.soundcloud.com/XXXX
+echo.
+echo YouTube:
+echo https://XXXX.trycloudflare.com/api/stream-yt?url=https://youtu.be/XXXX
+echo.
+echo Telegram image:
+echo https://XXXX.trycloudflare.com/api/stream-tg-image?url=https://t.me/channel/123
+echo ===============================
+echo.
+
 pause

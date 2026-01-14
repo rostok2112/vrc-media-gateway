@@ -70,18 +70,3 @@ http://127.0.0.1:5000/api/stream-file?name=your.mp4  # FastAPI local test
 ### Behavior
 - On first request the server will download/convert - expect ~10-30s (depends on file size and network). The result is cached under `html/streams/<id>/` for subsequent instant access.
 - The API returns a playable URL (served by nginx). For maximum compatibility with VRChat, use `X-Accel-Redirect` or return `200 OK` with `.m3u8` body (avoid plain `302` redirects).
-
----
-
-## Troubleshooting (quick)
-If the player shows `invalid or incomplete stream source`:
-1. `curl -v` the API URL and the final `/streams/<id>/index.m3u8` URL. Check status codes and Content-Type. The API URL should yield `200 OK` and serve the playlist, or use `X-Accel-Redirect` so nginx serves the playlist.
-2. Check `Content-Type` for `.m3u8` - must be `application/vnd.apple.mpegurl` and `.ts` must be `video/mp2t`.
-3. Ensure `index.m3u8` exists and first `.ts` file has non-zero size.
-4. Test with `ffplay` locally:
-```bash
-ffplay -i http://127.0.0.1:8080/streams/<id>/index.m3u8
-```
-5. If you use Cloudflare Tunnel, try bypassing it for debugging (`http://127.0.0.1:8080/...`) to ensure CF cache or rules aren't interfering.
-
----

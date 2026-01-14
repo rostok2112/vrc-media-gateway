@@ -5,7 +5,7 @@ cd /d "%~dp0"
 
 set INPUT_DIR=input
 set HTML_DIR=html
-set CACHE_DIR=output
+set CACHE_DIR=output_cached
 
 if not exist "%INPUT_DIR%" (
     echo [ERROR] input folder not found
@@ -31,51 +31,64 @@ for %%F in ("%INPUT_DIR%\*") do (
 
     if not exist "!OUT_DIR!" mkdir "!OUT_DIR!"
 
-    REM ===== AUDIO =====
-    if /I "!EXT!"==".mp3" (
-        set MODE=AUDIO
-    ) else if /I "!EXT!"==".wav" (
-        set MODE=AUDIO
-    ) else if /I "!EXT!"==".flac" (
-        set MODE=AUDIO
-    ) else if /I "!EXT!"==".aac" (
-        set MODE=AUDIO
-    ) else if /I "!EXT!"==".ogg" (
-        set MODE=AUDIO
-    ) else (
-        set MODE=VIDEO
-    )
+    REM =========================
+    REM Detect audio vs video
+    REM =========================
+    set MODE=VIDEO
+    if /I "!EXT!"==".mp3" set MODE=AUDIO
+    if /I "!EXT!"==".wav" set MODE=AUDIO
+    if /I "!EXT!"==".flac" set MODE=AUDIO
+    if /I "!EXT!"==".aac" set MODE=AUDIO
+    if /I "!EXT!"==".ogg" set MODE=AUDIO
 
+    REM =========================
+    REM AUDIO → HLS (stereo!)
+    REM =========================
     if "!MODE!"=="AUDIO" (
-        echo Audio detected
+        echo Audio detected → converting to stereo HLS
+
         ffmpeg -y -i "!INFILE!" ^
           -vn ^
           -c:a aac ^
-          -b:a 256k ^
+          -profile:a aac_low ^
+          -ac 2 ^
+          -ar 48000 ^
+          -b:a 192k ^
           -f hls ^
           -hls_time 4 ^
           -hls_list_size 0 ^
           -hls_playlist_type vod ^
+          -hls_flags independent_segments ^
           "!OUT_DIR!\index.m3u8"
+
     ) else (
-        echo Video detected
+
+    REM =========================
+    REM VIDEO → HLS (FIXED AUDIO)
+    REM =========================
+        echo Video detected → converting with stereo downmix
+
         ffmpeg -y -i "!INFILE!" ^
+          -map 0:v:0 -map 0:a:0 ^
           -c:v libx264 ^
           -preset fast ^
           -profile:v high ^
           -level 4.2 ^
           -pix_fmt yuv420p ^
-          -b:v 12000k ^
-          -maxrate 14000k ^
-          -bufsize 28000k ^
           -g 60 ^
+          -keyint_min 60 ^
           -sc_threshold 0 ^
           -c:a aac ^
-          -b:a 320k ^
+          -profile:a aac_low ^
+          -ac 2 ^
+          -ar 48000 ^
+          -b:a 192k ^
+          -af "pan=stereo|FL<0.8*FL+0.6*FC+0.6*BL|FR<0.8*FR+0.6*FC+0.6*BR" ^
           -f hls ^
-          -hls_time 2 ^
+          -hls_time 4 ^
           -hls_list_size 0 ^
           -hls_playlist_type vod ^
+          -hls_flags independent_segments ^
           "!OUT_DIR!\index.m3u8"
     )
 

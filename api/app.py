@@ -200,7 +200,10 @@ def stream_sc(url: str = Query(...)):
             "-i", str(audio),
             "-vn",
             "-c:a", "aac",
-            "-b:a", "256k",
+            "-profile:a", "aac_low",
+            "-ac", "2",
+            "-ar", "48000",
+            "-b:a", "192k",
             "-f", "hls",
             "-hls_time", "4",
             "-hls_list_size", "0",
@@ -280,8 +283,10 @@ def stream_yt(url: str = Query(...)):
         subprocess.run([
             str(FFMPEG), "-y",
             "-i", str(video),
-            "-map", "0:v:0?",
-            "-map", "0:a:0?",
+
+            "-map", "0:v:0",
+            "-map", "0:a:0",
+
             "-c:v", "libx264",
             "-profile:v", "high",
             "-level", "4.2",
@@ -290,12 +295,23 @@ def stream_yt(url: str = Query(...)):
             "-b:v", "8000k",
             "-maxrate", "9000k",
             "-bufsize", "16000k",
+            "-g", "60",
+            "-keyint_min", "60",
+            "-sc_threshold", "0",
+
             "-c:a", "aac",
-            "-b:a", "256k",
+            "-profile:a", "aac_low",
+            "-ac", "2",
+            "-ar", "48000",
+            "-b:a", "192k",
+            "-af", "pan=stereo|FL<0.8*FL+0.6*FC+0.6*BL|FR<0.8*FR+0.6*FC+0.6*BR",
+
             "-f", "hls",
             "-hls_time", "4",
             "-hls_list_size", "0",
             "-hls_playlist_type", "vod",
+            "-hls_flags", "independent_segments",
+
             str(m3u8)
         ], check=True)
 

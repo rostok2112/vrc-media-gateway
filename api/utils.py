@@ -1,87 +1,214 @@
-import subprocess
+# utils.py
 import time
 import re
-import urllib.parse as urlparse
-import requests
+import subprocess
 from pathlib import Path
-from typing import Tuple
-from fastapi import HTTPException
-from .config import STREAMS, FFMPEG, AUDIO_TARGET, HLS_OPTS
+from typing import Optional, List, Tuple
 
-def run_cmd(cmd):
-    p = subprocess.run(cmd, capture_output=True, text=True)
+import requests
+from fastapi import HTTPException
+
+from api import config
+
+
+# =========================
+# LOW LEVEL
+# =========================
+
+def run_cmd(cmd: List[str], timeout: Optional[int] = None):
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if p.returncode != 0:
-        raise RuntimeError(f"cmd failed: {' '.join(cmd)}\nstdout:{p.stdout}\nstderr:{p.stderr}")
+        raise RuntimeError(
+            f"CMD FAILED:\n{' '.join(cmd)}\n\nSTDOUT:\n{p.stdout}\n\nSTDERR:\n{p.stderr}"
+        )
     return p
 
-def rewrite_m3u8(m3u8: Path, stream_id: str):
-    text = m3u8.read_text(encoding="utf-8")
-    out_lines = []
-    for line in text.splitlines():
-        if not line or line.startswith("#"):
-            out_lines.append(line)
-        else:
-            out_lines.append(f"/api/stream_segment/{stream_id}/{line.lstrip('./')}")
-    m3u8.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
 
-def normalize_yt_url(url: str) -> str:
-    p = urlparse.urlparse(url)
-    netloc = p.netloc.lower()
-    if netloc.endswith("youtu.be"):
-        video_id = p.path.lstrip("/")
-        if video_id:
-            return f"https://www.youtube.com/watch?v={video_id}"
-    if "youtube" in netloc:
-        qs = urlparse.parse_qs(p.query)
-        if "v" in qs:
-            return f"https://www.youtube.com/watch?v={qs['v'][0]}"
-    return url
+def wait_hls_ready(out_dir: Path, timeout: int = 30) -> bool:
+    m3u8 = out_dir / "index.m3u8"
+    start = time.time()
+    while time.time() - start < timeout:
+        if m3u8.exists() and m3u8.stat().st_size > 200:
+            ts = list(out_dir.glob("*.ts"))
+            if ts and any(t.stat().st_size > 1024 for t in ts):
+                return True
+        time.sleep(0.3)
+    return False
 
-# telegram helpers
-def extract_image_from_telegram_html(html: str, base_url: str = None):
-    m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, flags=re.I)
-    if not m:
-        m = re.search(r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']', html, flags=re.I)
-    if not m:
-        m = re.search(r'<img[^>]+class=["\'][^"\']*tgme_widget_message_photo_wrap[^"\']*["\'][^>]+src=["\']([^"\']+)["\']', html, flags=re.I)
-    if not m:
-        m = re.search(r'data-src=["\']([^"\']+)["\']', html, flags=re.I)
-    if not m:
-        m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', html, flags=re.I)
-    if not m:
-        return None
-    img = m.group(1)
-    if base_url and img.startswith("/"):
-        return urlparse.urljoin(base_url, img)
-    return img
 
-def try_fetch_telegram_post(url: str, timeout=15) -> Tuple[str,str]:
+def download_file(url: str, dest: Path, max_bytes: int = 8 * 1024 * 1024):
     headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+    with requests.get(url, headers=headers, stream=True, timeout=15) as r:
         r.raise_for_status()
-        return r.text, r.url
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        size = 0
+        with dest.open("wb") as f:
+            for chunk in r.iter_content(8192):
+                if not chunk:
+                    continue
+                size += len(chunk)
+                if size > max_bytes:
+                    raise HTTPException(400, "file too large")
+                f.write(chunk)
+    return dest
+
+
+# =========================
+# AUDIO PARAMS
+# =========================
+
+def ffmpeg_audio_params() -> List[str]:
+    at = config.AUDIO_TARGET
+    args = [
+        "-c:a", at.get("codec", "aac"),
+        "-ac", str(at.get("channels", 2)),
+        "-ar", str(at.get("samplerate", 48000)),
+        "-b:a", at.get("bitrate", "256k"),
+    ]
+
+    # корректный downmix 5.1 → stereo
+    if int(at.get("channels", 2)) == 2:
+        args += [
+            "-af",
+            "pan=stereo|FL<FL+0.0*FC+0.6*BL|FR<FR+0.0*FC+0.6*BR"
+        ]
+    return args
+
+
+# =========================
+# IMAGE → MP4
+# =========================
+
+def image_to_mp4(
+    image: Path,
+    out_mp4: Path,
+    duration: int,
+    width: int,
+    height: int,
+):
+    cmd = [
+        config.FFMPEG, "-y",
+        "-loop", "1",
+        "-i", str(image),
+        "-f", "lavfi",
+        "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+        "-t", str(duration),
+        "-vf", f"scale={width}:{height}:flags=lanczos",
+        "-pix_fmt", "yuv420p",
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-profile:v", "high",
+        "-level", "4.2",
+        *ffmpeg_audio_params(),
+        "-shortest",
+        str(out_mp4)
+    ]
+    run_cmd(cmd)
+
+
+# =========================
+# HLS BUILDERS
+# =========================
+
+def video_to_hls(video: Path, out_dir: Path, stream_id: str):
+    m3u8 = out_dir / "index.m3u8"
+    hls = config.HLS_OPTS
+
+    cmd = [
+        config.FFMPEG, "-y",
+        "-i", str(video),
+        "-c:v", "copy",
+        *ffmpeg_audio_params(),
+        "-f", "hls",
+        "-hls_time", str(hls.get("hls_time", 4)),
+        "-hls_list_size", str(hls.get("hls_list_size", 0)),
+        "-hls_playlist_type", hls.get("hls_playlist_type", "vod"),
+        "-hls_base_url", f"/streams/{stream_id}/",
+        str(m3u8)
+    ]
+    run_cmd(cmd)
+
+
+def audio_to_hls(audio: Path, out_dir: Path, stream_id: str):
+    m3u8 = out_dir / "index.m3u8"
+    hls = config.HLS_OPTS
+
+    cmd = [
+        config.FFMPEG, "-y",
+        "-i", str(audio),
+        "-vn",
+        *ffmpeg_audio_params(),
+        "-f", "hls",
+        "-hls_time", str(hls.get("hls_time", 4)),
+        "-hls_list_size", str(hls.get("hls_list_size", 0)),
+        "-hls_playlist_type", hls.get("hls_playlist_type", "vod"),
+        "-hls_base_url", f"/streams/{stream_id}/",
+        str(m3u8)
+    ]
+    run_cmd(cmd)
+
+
+# =========================
+# IMAGE → HLS (ОРКЕСТРАТОР)
+# =========================
+
+def build_hls_from_image(
+    image_url: str,
+    stream_id: str,
+    duration: int = 300,
+    width: int = 1280,
+    height: int = 720,
+):
+    out_dir = config.STREAMS / stream_id
+    m3u8 = out_dir / "index.m3u8"
+
+    if m3u8.exists():
+        return
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    img = out_dir / "src.jpg"
+    mp4 = out_dir / "video.mp4"
+
+    download_file(image_url, img)
+    image_to_mp4(img, mp4, duration, width, height)
+    video_to_hls(mp4, out_dir, stream_id)
+
+    try:
+        mp4.unlink()
     except Exception:
         pass
-    p = urlparse.urlparse(url)
-    if p.netloc.endswith("t.me"):
-        parts = p.path.strip("/").split("/")
-        if len(parts) >= 2:
-            channel, msg = parts[0], parts[1]
-            alt = f"https://t.me/s/{channel}/{msg}"
-            try:
-                r = requests.get(alt, headers=headers, timeout=timeout, allow_redirects=True)
-                r.raise_for_status()
-                return r.text, r.url
-            except Exception:
-                pass
-    raise HTTPException(status_code=400, detail="can't fetch telegram post HTML; maybe it's private or blocked")
 
-def ffmpeg_audio_params() -> list:
-    return [
-        "-c:a", AUDIO_TARGET["codec"],
-        "-profile:a", AUDIO_TARGET["profile"],
-        "-ac", AUDIO_TARGET["channels"],
-        "-ar", AUDIO_TARGET["samplerate"],
-        "-b:a", AUDIO_TARGET["bitrate"],
+    if not wait_hls_ready(out_dir):
+        raise HTTPException(500, "HLS build timeout")
+
+
+# =========================
+# HTML IMAGE EXTRACTION (TG / WEB)
+# =========================
+
+def extract_image_from_html(html: str, base_url: Optional[str] = None) -> Optional[str]:
+    patterns = [
+        r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']',
+        r'data-src=["\']([^"\']+)["\']',
+        r'<img[^>]+src=["\']([^"\']+)["\']',
     ]
+
+    for p in patterns:
+        m = re.search(p, html, flags=re.I)
+        if m:
+            url = m.group(1)
+            if base_url and url.startswith("/"):
+                return requests.compat.urljoin(base_url, url)
+            if url.startswith("//"):
+                return "https:" + url
+            return url
+    return None
+
+
+def fetch_html(url: str) -> Tuple[str, str]:
+    headers = {"User-Agent": "Mozilla/5.0"}
+    r = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+    r.raise_for_status()
+    return r.text, r.url

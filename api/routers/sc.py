@@ -1,26 +1,27 @@
+# sc.py
 from fastapi import APIRouter, Query, Response, HTTPException
-from pathlib import Path
 import hashlib, subprocess
-from ..config import STREAMS, YTDLP, FFMPEG
-from ..utils import run_cmd, rewrite_m3u8, ffmpeg_audio_params
+
+from api import config, utils
 
 router = APIRouter()
 
 @router.get("/stream-sc")
 def stream_sc(url: str = Query(...)):
-    track_id = hashlib.md5(url.encode()).hexdigest()
-    out_dir = STREAMS / track_id
+    sid = hashlib.md5(url.encode()).hexdigest()
+    out_dir = config.STREAMS / sid
     m3u8 = out_dir / "index.m3u8"
-    if not m3u8.exists():
-        out_dir.mkdir(parents=True, exist_ok=True)
-        audio = out_dir / "audio.m4a"
-        subprocess.run([str(YTDLP), "-f", "bestaudio", "-o", str(audio), url], check=True)
-        ff = [
-            str(FFMPEG), "-y", "-i", str(audio), "-vn"
-        ] + ffmpeg_audio_params() + [
-            "-f", "hls", "-hls_time", "4", "-hls_list_size", "0", "-hls_playlist_type", "vod",
-            str(m3u8)
-        ]
-        run_cmd(ff)
-        rewrite_m3u8(m3u8, track_id)
-    return Response(content=m3u8.read_text(), media_type="application/vnd.apple.mpegurl")
+    if m3u8.exists():
+        return Response(status_code=200, headers={"X-Accel-Redirect": f"/streams/{sid}/index.m3u8", "Content-Type":"application/vnd.apple.mpegurl"})
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    audio_out = out_dir / "audio.m4a"
+    try:
+        subprocess.run([config.YTDLP, "-f", "bestaudio", "-o", str(audio_out), url], check=True)
+        utils.audio_to_hls(audio_out, out_dir, sid)
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"yt-dlp failed: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return Response(status_code=200, headers={"X-Accel-Redirect": f"/streams/{sid}/index.m3u8", "Content-Type":"application/vnd.apple.mpegurl"})

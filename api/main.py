@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from .routers import tg, sc, yt, segments
+from .routers import tg, sc, yt, img, segments
 
 app = FastAPI(title="vrc-media-gateway")
 
@@ -7,4 +7,5 @@ app = FastAPI(title="vrc-media-gateway")
 app.include_router(tg.router, prefix="/api")
 app.include_router(sc.router, prefix="/api")
 app.include_router(yt.router, prefix="/api")
+app.include_router(img.router, prefix="/api")
 app.include_router(segments.router, prefix="/api")

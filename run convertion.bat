@@ -5,7 +5,7 @@ cd /d "%~dp0"
 
 set INPUT_DIR=input
 set HTML_DIR=html
-set CACHE_DIR=output_cached
+set CACHE_DIR=output
 
 if not exist "%INPUT_DIR%" (
     echo [ERROR] input folder not found

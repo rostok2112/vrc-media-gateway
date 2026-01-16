@@ -1,7 +1,6 @@
-
 from fastapi import APIRouter, Query, Response, HTTPException
 import hashlib
-from api import utils
+from api import config, utils
 
 router = APIRouter()
 
@@ -28,3 +27,25 @@ def stream_tg_image(url: str = Query(...), duration: int = Query(300), width: in
         raise HTTPException(status_code=500, detail=str(e))
 
     return Response(status_code=200, headers={"X-Accel-Redirect": f"/streams/{sid}/index.m3u8", "Content-Type":"application/vnd.apple.mpegurl"})
+
+@router.get("/stream-tg-video")
+async def stream_tg_video(url: str = Query(...)):
+    try:
+        video = await utils.download_tg_video(url)
+
+        sid = hashlib.md5(str(video).encode()).hexdigest()
+
+        out_dir = config.STREAMS / sid
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        utils.video_to_hls(video, out_dir, sid)
+
+        return Response(
+            status_code=200,
+            headers={
+                "X-Accel-Redirect": f"/streams/{sid}/index.m3u8",
+                "Content-Type": "application/vnd.apple.mpegurl",
+            },
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))

@@ -1,8 +1,13 @@
+import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 BASE = Path(__file__).resolve().parents[1]
 STREAMS = BASE / "html" / "streams"
-VIDEOS = BASE / "input"
+INPUT = BASE / "input"
+OUTPUT = BASE / "output"
 COOKIES = BASE / "cookies.txt"
 
 YTDLP = "yt-dlp.exe"
@@ -21,3 +26,8 @@ AUDIO_TARGET = {
     "samplerate": "48000",
     "bitrate": "192k"
 }
+
+TG_API_ID = int(os.getenv("TG_API_ID", "0"))
+TG_API_HASH = os.getenv("TG_API_HASH", "")
+TG_PASSWORD = os.getenv("TG_PASSWORD", "")
+TG_SESSION = os.getenv("TG_SESSION", "tg_session")

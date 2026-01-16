@@ -29,5 +29,13 @@ echo Telegram image:
 echo https://XXXX.trycloudflare.com/api/stream-tg-image?url=https://t.me/channel/123
 echo ===============================
 echo.
+echo Telegram video:
+echo https://XXXX.trycloudflare.com/api/stream-tg-video?url=https://t.me/channel/123
+echo ===============================
+echo.
+echo Image:
+echo https://XXXX.trycloudflare.com/api/stream-image?url=https://t.me/channel/123
+echo ===============================
+echo.
 
 pause

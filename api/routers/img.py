@@ -1,4 +1,3 @@
-# img.py
 from fastapi import APIRouter, Query, Response, HTTPException
 import hashlib
 

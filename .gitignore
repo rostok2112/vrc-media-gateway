@@ -17,7 +17,11 @@ temp/
 
 # Secrets
 cookies.txt
+*.env
+*.session
+tg_qr.png
 
 # IDE
 .vscode/
 .idea/
+

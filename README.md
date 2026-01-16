@@ -37,7 +37,7 @@ https://<your-domain>.trycloudflare.com/api/stream-sc?url=<soundcloud-link>
 
 Install Python deps:
 ```bash
-pip install fastapi uvicorn requests
+pip install fastapi uvicorn requests telethon dotenv qrcode[pil]
 ```
 
 ---

@@ -1,4 +1,3 @@
-# segments.py
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from api import config

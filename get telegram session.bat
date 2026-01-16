@@ -1,0 +1,2 @@
+python auxillary/get_tg_session.py
+pause

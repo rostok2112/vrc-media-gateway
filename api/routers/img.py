@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Query, Response, HTTPException
 import hashlib
 
-from api import utils
+from api import config, utils
 
 
 router = APIRouter()
@@ -13,12 +13,25 @@ def stream_image(url: str = Query(...), duration: int = Query(300), width: int =
     if not url.lower().startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="invalid url")
 
-    sid = hashlib.md5((url + f"{duration}{width}x{height}").encode()).hexdigest()
+    sid = utils.sid_for_url(url, f"{duration}{width}x{height}")
+    out_dir = config.STREAMS / sid
+    m3u8 = out_dir / "index.m3u8"
+
+    if m3u8.exists():
+        return Response(status_code=200, headers={
+            "X-Accel-Redirect": f"/streams/{sid}/index.m3u8",
+            "Content-Type": "application/vnd.apple.mpegurl",
+        })
+
     try:
+        out_dir.mkdir(parents=True, exist_ok=True)
         utils.build_hls_from_image(url, sid, duration=duration, width=width, height=height)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    return Response(status_code=200, headers={"X-Accel-Redirect": f"/streams/{sid}/index.m3u8", "Content-Type":"application/vnd.apple.mpegurl"})
+    return Response(status_code=200, headers={
+        "X-Accel-Redirect": f"/streams/{sid}/index.m3u8",
+        "Content-Type": "application/vnd.apple.mpegurl",
+    })

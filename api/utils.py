@@ -1,9 +1,11 @@
 import asyncio
+import hashlib
 import time
 import re
 import subprocess
 from pathlib import Path
 from typing import Optional, List, Tuple
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import requests
 from fastapi import HTTPException
 from telethon import TelegramClient
@@ -345,3 +347,17 @@ async def download_tg_video(url: str) -> Path:
     ensure_file(target)
 
     return target
+
+
+def normalize_url(url: str) -> str:
+    p = urlparse(url)
+    q = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
+         if not (k.lower().startswith("utm_") or k.lower() == "fbclid")]
+    q.sort()
+    return urlunparse((p.scheme, p.netloc, p.path or "/", p.params, urlencode(q, doseq=True), ""))
+
+def sid_for_url(url: str, *extra_parts) -> str:
+    s = normalize_url(url)
+    if extra_parts:
+        s += "|" + "|".join(str(x) for x in extra_parts)
+    return hashlib.md5(s.encode()).hexdigest()

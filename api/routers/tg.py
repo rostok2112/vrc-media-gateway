@@ -4,8 +4,25 @@ from api import config, utils
 
 router = APIRouter()
 
+
 @router.get("/stream-tg-image")
 def stream_tg_image(url: str = Query(...), duration: int = Query(300), width: int = Query(1280), height: int = Query(720)):
+    if url.startswith("//"):
+        url = "https:" + url
+    if not url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="invalid url")
+
+    # check cache based on actual tg post URL
+    post_sid = utils.sid_for_url(url, f"{duration}{width}x{height}")
+    post_out_dir = config.STREAMS / post_sid
+    post_m3u8 = post_out_dir / "index.m3u8"
+    
+    if post_m3u8.exists():
+        return Response(status_code=200, headers={
+            "X-Accel-Redirect": f"/streams/{post_sid}/index.m3u8",
+            "Content-Type": "application/vnd.apple.mpegurl",
+        })
+
     try:
         html, final = utils.fetch_html(url)
     except Exception as e:
@@ -17,8 +34,18 @@ def stream_tg_image(url: str = Query(...), duration: int = Query(300), width: in
 
     if img_url.startswith("//"):
         img_url = "https:" + img_url
+    if not img_url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="invalid extracted image url")
 
-    sid = hashlib.md5((img_url + f"{duration}{width}x{height}").encode()).hexdigest()
+    # check cache based on actual image URL
+    img_sid = utils.sid_for_url(img_url, f"{duration}{width}x{height}")
+    img_m3u8 = config.STREAMS / img_sid / "index.m3u8"
+    if img_m3u8.exists():
+        return Response(status_code=200, headers={
+            "X-Accel-Redirect": f"/streams/{img_sid}/index.m3u8",
+            "Content-Type": "application/vnd.apple.mpegurl",
+        })
+    
     try:
         utils.build_hls_from_image(img_url, sid, duration=duration, width=width, height=height)
     except HTTPException:
@@ -26,26 +53,37 @@ def stream_tg_image(url: str = Query(...), duration: int = Query(300), width: in
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    return Response(status_code=200, headers={"X-Accel-Redirect": f"/streams/{sid}/index.m3u8", "Content-Type":"application/vnd.apple.mpegurl"})
+    return Response(status_code=200, headers={"X-Accel-Redirect": f"/streams/{img_sid}/index.m3u8", "Content-Type":"application/vnd.apple.mpegurl"})
+
 
 @router.get("/stream-tg-video")
 async def stream_tg_video(url: str = Query(...)):
+    if url.startswith("//"):
+        url = "https:" + url
+    if not url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="invalid url")
+
+    sid = utils.sid_for_url(url)
+    out_dir = config.STREAMS / sid
+    m3u8 = out_dir / "index.m3u8"
+
+    # cache hit
+    if m3u8.exists():
+        return Response(status_code=200, headers={
+            "X-Accel-Redirect": f"/streams/{sid}/index.m3u8",
+            "Content-Type": "application/vnd.apple.mpegurl",
+        })
+
+    out_dir.mkdir(parents=True, exist_ok=True)
     try:
         video = await utils.download_tg_video(url)
-
-        sid = hashlib.md5(str(video).encode()).hexdigest()
-
-        out_dir = config.STREAMS / sid
-        out_dir.mkdir(parents=True, exist_ok=True)
-
         utils.video_to_hls(video, out_dir, sid)
 
-        return Response(
-            status_code=200,
-            headers={
-                "X-Accel-Redirect": f"/streams/{sid}/index.m3u8",
-                "Content-Type": "application/vnd.apple.mpegurl",
-            },
-        )
+        return Response(status_code=200, headers={
+            "X-Accel-Redirect": f"/streams/{sid}/index.m3u8",
+            "Content-Type": "application/vnd.apple.mpegurl",
+        })
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))

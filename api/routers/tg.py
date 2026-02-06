@@ -47,7 +47,7 @@ def stream_tg_image(url: str = Query(...), duration: int = Query(300), width: in
         })
     
     try:
-        utils.build_hls_from_image(img_url, sid, duration=duration, width=width, height=height)
+        utils.build_hls_from_image(img_url, img_sid, duration=duration, width=width, height=height)
     except HTTPException:
         raise
     except Exception as e:

@@ -24,17 +24,47 @@ def stream_yt(url: str = Query(...)):
     sid = hashlib.md5(norm.encode()).hexdigest()
     out_dir = config.STREAMS / sid
     m3u8 = out_dir / "index.m3u8"
+
     if m3u8.exists():
-        return Response(status_code=200, headers={"X-Accel-Redirect": f"/streams/{sid}/index.m3u8", "Content-Type":"application/vnd.apple.mpegurl"})
+        return Response(
+            status_code=200,
+            headers={
+                "X-Accel-Redirect": f"/streams/{sid}/index.m3u8",
+                "Content-Type": "application/vnd.apple.mpegurl",
+            },
+        )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     video_out = out_dir / "video.mp4"
+
     try:
-        cmd = [config.YTDLP, "--cookies", str(config.COOKIES), "-f", "bv*+ba/b", "--merge-output-format", "mp4", "--no-playlist", "-o", str(video_out), norm]
+        cmd = [
+            config.YTDLP,
+            "--js-runtimes", "node",
+            "--remote-components", "ejs:github",
+            "--cookies", str(config.COOKIES),
+            "-f", "best",
+            "--merge-output-format", "mp4",
+            "--no-playlist",
+            "-o", str(video_out),
+            norm,
+        ]
+
         subprocess.run(cmd, check=True)
+
     except subprocess.CalledProcessError:
         try:
-            subprocess.run([config.YTDLP, "-f", "bv*+ba/b", "--merge-output-format", "mp4", "--no-playlist", "-o", str(video_out), norm], check=True)
+            subprocess.run([
+                config.YTDLP,
+                "--js-runtimes", "node",
+                "--remote-components", "ejs:github",
+                "-f", "best",
+                "--merge-output-format", "mp4",
+                "--no-playlist",
+                "-o", str(video_out),
+                norm,
+            ], check=True)
+
         except subprocess.CalledProcessError as e:
             raise HTTPException(status_code=500, detail=f"yt-dlp failed: {e}")
 
@@ -43,4 +73,10 @@ def stream_yt(url: str = Query(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    return Response(status_code=200, headers={"X-Accel-Redirect": f"/streams/{sid}/index.m3u8", "Content-Type":"application/vnd.apple.mpegurl"})
+    return Response(
+        status_code=200,
+        headers={
+            "X-Accel-Redirect": f"/streams/{sid}/index.m3u8",
+            "Content-Type": "application/vnd.apple.mpegurl",
+        },
+    )

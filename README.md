@@ -7,7 +7,7 @@
 ## What this project does
 - Converts media files to HLS (`.m3u8 + .ts`) using **ffmpeg**.
 - Downloads SoundCloud tracks via **yt-dlp** and converts them to HLS.
-- Downloads YouTube videos (optionally using `cookies.txt`) via **yt-dlp** and converts to HLS.
+- Downloads YouTube videos via **yt-dlp** and converts them to HLS.
 - Serves HLS streams with **nginx**.
 - Exposes nginx through **Cloudflare Tunnel** to get a free public HTTPS domain.
 - Provides **FastAPI** endpoints to automate: download → convert → serve → cached HLS URL.
@@ -32,6 +32,7 @@ https://<your-domain>.trycloudflare.com/api/stream-sc?url=<soundcloud-link>
 - yt-dlp (in PATH)
 - nginx (in PATH)
 - cloudflared (in PATH)
+- Node.js (in PATH)
 - Python 3.10+
 - Python packages: `fastapi`, `uvicorn`
 
@@ -39,6 +40,21 @@ Install Python deps:
 ```bash
 pip install fastapi uvicorn requests telethon dotenv qrcode[pil]
 ```
+
+Node.js check:
+
+```
+node -v
+where node
+```
+
+If node is not found:
+
+```
+setx PATH "%PATH%;C:\Program Files\nodejs\"
+```
+
+Restart terminal after that.
 
 ---
 
@@ -49,23 +65,97 @@ pip install fastapi uvicorn requests telethon dotenv qrcode[pil]
 ---
 
 ## Usage and prepare and run
-1. Put `ffmpeg`, `yt-dlp`, `cloudflared` in your PATH.
+1. Put `ffmpeg`, `yt-dlp`, `cloudflared` and `Node.js` in your PATH.
 2. Configure nginx (`main.conf`) - example config is provided in repo.
 3. Create Cloudflare Tunnel and note the public domain.
 4. Start services (example `run_stream_server.bat`):
 5. Test locally:
+
 ```
 http://127.0.0.1:8080/   # nginx root
 http://127.0.0.1:5000/api/stream-file?name=your.mp4  # FastAPI local test
 ```
 
+Telegram preparation:
+- Copy `api/.env.sample` → `api/.env`
+- In `api/.env` replace ONLY:
+
+```
+TG_API_ID=your_api_id
+TG_API_HASH=your_api_hash
+```
+
+Optional (if you use 2FA):
+
+```
+TG_PASSWORD=your_password
+```
+
+Generate Telegram session (QR):
+
+```
+python auxillary/get_tg_session.py
+```
+
+Scan QR in Telegram mobile:
+Settings → Devices → Scan QR
+
+After success file appears:
+
+```
+api/tg_session.session
+```
+
+YouTube note:
+
+- yt-dlp now requires JS challenge solving. Run yt-dlp with Node enabled:
+
+```
+yt-dlp --js-runtimes node --remote-components ejs:github ...
+```
+
+## Run
+
+---
+
+Convert file to HLS from `./input` and place corresponding `.html/index.m3u8` file for streaming by nginx:
+
+```
+./"run convertion.bat"
+```
+
+nginx:
+
+```
+./"run server.bat"
+```
+
+cloudflared:
+
+```
+./"run tunnel.bat"
+```
+
+Streaming API:
+
+```
+./"run api.bat"
+```
+
+Combined:
+
+```
+./"run streamer server.bat"
+```
+
 ---
 
 ## API endpoints (examples)
-- `GET /api/stream-sc?url=<soundcloud_url>` - download SoundCloud track, convert to HLS
-- `GET /api/stream-yt?url=<youtube_url>` - download YouTube (uses cookies.txt if present), convert to HLS
-- `GET /api/stream-tg-image?name=<filename>` - download an image from Telegram, creating static video and convert to HLS
-- `GET /api/stream-file?name=<filename>` - convert a local file placed in `input/` to HLS
+- `GET /api/stream-sc?url=<url>` - download SoundCloud track, convert to HLS
+- `GET /api/stream-yt?url=<url>` - download YouTube, convert to HLS
+- `GET /api/stream-tg-image?url=<url>` - download an image from Telegram, creating static video and convert to HLS
+- `GET /api/stream-tg-video?name=<url>` - download an video from Telegram, convert to HLS
+- `GET /api/stream-stream_image?url=<url>` -  download an image, creating static video and convert to HLS
 
 ### Behavior
 - On first request the server will download/convert - expect ~10-30s (depends on file size and network). The result is cached under `html/streams/<id>/` for subsequent instant access.

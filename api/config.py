@@ -6,11 +6,14 @@ load_dotenv()
 
 BASE = Path(__file__).resolve().parents[1]
 STREAMS = BASE / "html" / "streams"
+LOGS = BASE / "logs"
 INPUT = BASE / "input"
 OUTPUT = BASE / "output"
 COOKIES = BASE / "cookies.txt"
+CLOUDFLARED_LOG = LOGS / "cloudflared.log"
 
 YTDLP = "yt-dlp.exe"
+JS_RUNTIME = "node.exe"
 FFMPEG = "ffmpeg.exe"
 
 HLS_OPTS = {

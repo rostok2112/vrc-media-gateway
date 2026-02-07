@@ -40,7 +40,7 @@ def stream_yt(url: str = Query(...)):
     try:
         cmd = [
             config.YTDLP,
-            "--js-runtimes", "node",
+            "--js-runtimes", config.JS_RUNTIME,
             "--remote-components", "ejs:github",
             "--cookies", str(config.COOKIES),
             "-f", "best",
@@ -56,7 +56,7 @@ def stream_yt(url: str = Query(...)):
         try:
             subprocess.run([
                 config.YTDLP,
-                "--js-runtimes", "node",
+                "--js-runtimes", config.JS_RUNTIME,
                 "--remote-components", "ejs:github",
                 "-f", "best",
                 "--merge-output-format", "mp4",

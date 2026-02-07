@@ -6,14 +6,14 @@ echo VRChat Media Gateway
 echo ===============================
 echo.
 
-REM nginx (как было)
+REM nginx
 start "nginx" cmd /k nginx -c main.conf
 
-REM FastAPI (единственное изменение под новую структуру)
+REM FastAPI
 start "api" cmd /k uvicorn api.main:app --host 127.0.0.1 --port 5000
 
-REM cloudflared QUICK TUNNEL (КАК БЫЛО)
-start "cloudflared" cmd /k cloudflared tunnel --url http://127.0.0.1:8080
+REM cloudflared QUICK TUNNEL
+start "cloudflared" cmd /k cloudflared tunnel --url http://127.0.0.1:8080 ^> logs/cloudflared.log 2^>^&1
 
 echo.
 echo ===============================

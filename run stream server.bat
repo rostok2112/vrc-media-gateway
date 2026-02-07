@@ -13,7 +13,13 @@ REM FastAPI
 start "api" cmd /k uvicorn api.main:app --host 127.0.0.1 --port 5000
 
 REM cloudflared QUICK TUNNEL
-start "cloudflared" cmd /k cloudflared tunnel --url http://127.0.0.1:8080 ^> logs/cloudflared.log 2^>^&1
+if not exist logs mkdir logs
+type nul > logs\cloudflared.log
+start "cloudflared" cmd /k ^
+cloudflared tunnel --url http://127.0.0.1:8080 ^
+  --loglevel debug ^
+  --transport-loglevel debug ^
+  --logfile logs\cloudflared.log
 
 echo.
 echo ===============================

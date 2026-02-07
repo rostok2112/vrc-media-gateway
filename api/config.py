@@ -13,7 +13,7 @@ COOKIES = BASE / "cookies.txt"
 CLOUDFLARED_LOG = LOGS / "cloudflared.log"
 
 YTDLP = "yt-dlp.exe"
-JS_RUNTIME = "node.exe"
+JS_RUNTIME = "node"
 FFMPEG = "ffmpeg.exe"
 
 HLS_OPTS = {

@@ -2,7 +2,7 @@
     "manifest_version": 3,
     "name": "VRChat Media Gateway",
     "version": "1.0",
-    "description": "Adding buttons for convertion and streaming media VRChat",
+    "description": "Adding buttons for convertion and streaming media from internet in VRChat players",
     "permissions": [
       "contextMenus",
       "storage",
@@ -49,8 +49,8 @@
       },
       {
         "matches": ["<all_urls>"],
-        "js": ["content/inject_copy.js"],
-        "run_at": "document_idle"
+        "js": ["content/common_content.js"],
+        "run_at": "document_start"
       }
     ]
   }

@@ -199,3 +199,41 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
 
   return true;
 });
+
+const VR_IMAGE_MENU_ID = "vrchat-resolve-image";
+
+chrome.runtime.onInstalled.addListener(() => {
+  try {
+    chrome.contextMenus.removeAll(() => {
+      chrome.contextMenus.create({
+        id: VR_IMAGE_MENU_ID,
+        title: "VRChat",
+        contexts: ["image"]
+      });
+      console.log("[bg] image context menu created");
+    });
+  } catch (e) {
+    console.warn("[bg] failed to create image menu", e);
+  }
+});
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== VR_IMAGE_MENU_ID) return;
+
+  const imageUrl = info.srcUrl;
+
+  console.log("[bg] image menu clicked", imageUrl);
+
+  if (!imageUrl) {
+    chrome.tabs.sendMessage(tab.id, {
+      action: "vr_image_error",
+      error: "No image url"
+    });
+    return;
+  }
+
+  chrome.tabs.sendMessage(tab.id, {
+    action: "vr_resolve_image",
+    url: imageUrl
+  });
+});

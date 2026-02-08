@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Query, Response, HTTPException
 import hashlib
+
+from fastapi.responses import JSONResponse
 from api import config, utils
 
 router = APIRouter()
@@ -87,3 +89,15 @@ async def stream_tg_video(url: str = Query(...)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/resolve-tg-public-link")
+async def resolve_tg_public_link(internal: str = Query(...)):
+    try:
+        link = await utils.resolve_public_tg_link(internal)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not link:
+        raise HTTPException(status_code=404, detail="public username not found")
+
+    return {"url": link}

@@ -1,6 +1,5 @@
-// ===============================
-// VRChat Quick Links - background (debug-friendly)
-// ===============================
+// background.js (patched)
+// Based on your original background with added resolveTgPublicLink and extra logging
 
 async function getSettings() {
   return await chrome.storage.sync.get({
@@ -19,7 +18,6 @@ async function saveSettingsLocal(patch) {
   await chrome.storage.sync.set({ ...cur, ...patch });
 }
 
-// ---------- tunnel detect (ALWAYS via LOCAL) ----------
 async function detectTunnel() {
   try {
     const cfg = await getSettings();
@@ -35,7 +33,6 @@ async function detectTunnel() {
   }
 }
 
-// ---------- auto detect on startup (ONLY IF EMPTY and not manual) ----------
 async function autoDetectOnStartup() {
   const cfg = await getSettings();
   console.log("[bg] autoDetectOnStartup", cfg);
@@ -52,13 +49,11 @@ async function autoDetectOnStartup() {
 chrome.runtime.onStartup.addListener(autoDetectOnStartup);
 chrome.runtime.onInstalled.addListener(autoDetectOnStartup);
 
-// ---------- resolve bases (will attempt on-demand detect if allowed) ----------
 async function resolveBases() {
   const cfg = await getSettings();
   const localBase = `http://${cfg.localAddress}:${cfg.localPort}`;
   let publicBase = cfg.globalUrl?.replace(/\/$/, "") || "";
 
-  // If public is requested and not manual, attempt on-demand detect
   if (cfg.usePublicUrl && !cfg.manualGlobal) {
     console.log("[bg] resolveBases: usePublicUrl && not manual -> trying detect");
     try {
@@ -87,7 +82,6 @@ async function resolveBases() {
   return { fetchBase: publicBase, resultBase: publicBase };
 }
 
-// ---------- messages ----------
 chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
   (async () => {
     console.log("[bg] onMessage:", msg && msg.action);
@@ -100,20 +94,14 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
     }
 
     if (msg.action === "saveSettings") {
-      // Expect data possibly containing 'manual' boolean.
       const data = msg.data || {};
       const cur = await getSettings();
       const patch = { ...data };
-
-      // If caller specified explicit manual flag, respect it.
       if (Object.prototype.hasOwnProperty.call(data, "manual")) {
         patch.manualGlobal = !!data.manual;
       } else {
-        // If caller didn't specify manual, DO NOT change manualGlobal automatically.
-        // (This avoids accidental marking of auto-detected values as manual.)
         delete patch.manualGlobal;
       }
-
       console.log("[bg] saveSettings patch ->", patch);
       await saveSettingsLocal(patch);
       sendResponse({ ok: true });
@@ -130,7 +118,6 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
       console.log("[bg] refreshPublicUrl called");
       const url = await detectTunnel();
       if (url) {
-        // Save as AUTO explicitly (manualGlobal:false)
         await saveSettingsLocal({ globalUrl: url, manualGlobal: false });
         console.log("[bg] refreshPublicUrl: saved auto url", url);
       } else {
@@ -140,22 +127,37 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
       return;
     }
 
-    if (msg.action === "streamTelegram") {
+    // NEW: resolve public username for internal id via local API /api/resolve-tg-public-link
+    if (msg.action === "resolveTgPublicLink") {
       try {
-        const cfg = await getSettings();
-        const fetchUrl = `http://${cfg.localAddress}:${cfg.localPort}/api/stream-tg`;
-        console.log("[bg] streamTelegram -> POST", fetchUrl, msg.url);
-        const res = await fetch(fetchUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: msg.url })
-        });
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        const resultBase = cfg.usePublicUrl ? cfg.globalUrl.replace(/\/$/, "") : `http://${cfg.localAddress}:${cfg.localPort}`;
-        sendResponse({ url: resultBase + "/api/stream-tg" });
+        console.log("[bg] resolveTgPublicLink ->", msg.internal);
+        const { fetchBase } = await resolveBases();
+        if (!fetchBase) throw new Error("No fetch base available for resolve");
+
+        // Accept internal as passed: could be '#-100224...' or '-100...' or 'https://web.telegram.org/a/#-100...'
+        const internalParam = encodeURIComponent(String(msg.internal));
+        const fetchUrl = `${fetchBase}/api/resolve-tg-public-link?internal=${internalParam}`;
+        console.log("[bg] resolveTgPublicLink fetching:", fetchUrl);
+
+        const res = await fetch(fetchUrl, { cache: "no-store" });
+        if (res.status === 204) {
+          // explicit no public username
+          console.log("[bg] resolveTgPublicLink -> 204 no public username");
+          sendResponse({ found: false });
+          return;
+        }
+        if (!res.ok) {
+          const txt = await res.text();
+          console.log("[bg] resolveTgPublicLink HTTP error", res.status, txt);
+          sendResponse({ error: `HTTP ${res.status}: ${txt}` });
+          return;
+        }
+        const j = await res.json();
+        console.log("[bg] resolveTgPublicLink -> got json:", j);
+        sendResponse({ url: j.url || j.tme || null });
       } catch (e) {
-        console.log("[bg] streamTelegram error", e && e.message);
-        sendResponse({ error: e.message });
+        console.log("[bg] resolveTgPublicLink error", e && e.message);
+        sendResponse({ error: e && e.message });
       }
       return;
     }

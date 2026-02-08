@@ -43,6 +43,11 @@
         "run_at": "document_idle"
       },
       {
+        "matches": ["*://*.telegram.org/*"],
+        "js": ["content/telegram.js"],
+        "run_at": "document_idle"
+      },
+      {
         "matches": ["<all_urls>"],
         "js": ["content/inject_copy.js"],
         "run_at": "document_idle"

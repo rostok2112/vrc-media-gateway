@@ -4,14 +4,14 @@ import time
 import re
 import subprocess
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Union
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import requests
 from fastapi import HTTPException
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.custom.message import Message
-from telethon.tl.types import Message
+from telethon.tl.types import Message as TelethonMessage, PeerChannel
 
 from api import config
 
@@ -361,3 +361,27 @@ def sid_for_url(url: str, *extra_parts) -> str:
     if extra_parts:
         s += "|" + "|".join(str(x) for x in extra_parts)
     return hashlib.md5(s.encode()).hexdigest()
+
+def parse_internal_channel_id(value: str) -> int:
+    if "#-100" in value:
+        value = value.split("#-100", 1)[1]
+
+    if value.startswith("-100"):
+        value = value[4:]
+
+    if not value.isdigit():
+        raise ValueError("invalid internal channel id")
+
+    return int(value)
+
+async def resolve_public_tg_link(value: str) -> Optional[str]:
+    channel_id = parse_internal_channel_id(value)
+    client = await get_tg_client()
+
+    entity = await client.get_entity(PeerChannel(channel_id))
+
+    username = getattr(entity, "username", None)
+    if not username:
+        return None
+
+    return f"https://t.me/{username}"

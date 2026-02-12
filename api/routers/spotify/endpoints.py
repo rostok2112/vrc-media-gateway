@@ -1,7 +1,9 @@
+import math
 from pathlib import Path
-from fastapi import APIRouter, Query, Response, HTTPException
+from fastapi import APIRouter, Query, Request, Response, HTTPException
 from api import config, utils
 from api.routers.spotify import utils  as spotify_utils
+from api.segments_engine.gate import get_gate_for_sid
 from api.segments_engine.registry import ensure_segment, set_total_segments
 from api.segments_engine import utils as segments_engine_utils
 
@@ -44,54 +46,33 @@ async def stream_spotify(url: str = Query(...)):
     return Response(m3u8, media_type="application/vnd.apple.mpegurl")
 
 
-@router.get("/stream-spotify-segment/{sid}/{filename}")
-async def stream_spotify_segment(sid: str, filename: str):
-    out_dir = utils.out_dir_for_sid(sid)
-    seg_path = out_dir / filename
+@router.get("/api/stream-spotify-segment/{sid}/segment_{idx:05d}.ts")
+async def stream_spotify_segment(request: Request, sid: str, idx: int, seek: bool = Query(False)):
+    """
+    Gate-protected segment endpoint.
+    seek=True можно выставлять в случае явной seek операции (ws-событие), тогда сегмент отдадим сразу.
+    """
+    gate = get_gate_for_sid(sid, spotify_utils.SEG_TIME)
 
-    # вычислим индекс
-    try:
-        idx = int(filename.replace("segment_", "").replace(".ts", ""))
-    except Exception:
-        raise HTTPException(400, "bad filename")
+    allowed, wait = await gate.try_allow(idx, is_seek=seek)
+    if not allowed:
+        # возвращаем 503 + Retry-After (в секундах, округление вверх)
+        retry_after = str(math.ceil(wait)) if wait > 0 else "1"
+        return Response(status_code=503, headers={"Retry-After": retry_after}, content=b"")
 
-    # 1) если файл существует но битый (0 байт) — удаляем, чтобы перегенерить
-    try:
-        if seg_path.exists() and seg_path.stat().st_size == 0:
-            try:
-                seg_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-    except Exception:
-        # ignore filesystem races
-        pass
-
-    # 2) если файла нет — попросим registry обеспечить его
+    # allowed == True -> убедиться, что сегмент есть (или генерируем его через существующую логику)
+    seg_path = segments_engine_utils.segment_path_for(sid, idx)
     if not seg_path.exists():
-        await ensure_segment(sid, idx)
+        try:
+            await segments_engine_utils.ensure_segment_exists(sid, idx)
+        except Exception as e:
+            # если генерация упала — откатим gate (можно логировать)
+            return Response(status_code=503, headers={"Retry-After": "1"}, content=b"")
 
-    # 3) если после ensure сегмента всё ещё нет или он нулевой — форсим regen через seek
-    try:
-        if (not seg_path.exists()) or seg_path.stat().st_size == 0:
-            # форсируем перегенерацию через writer.request_seek
-            from api.segments_engine.registry import get_or_create_writer
-            w = await get_or_create_writer(sid, kind="spotify")
-            pos_ms = idx * w.segment_time * 1000
-            # await request_seek, затем дождёмся сегмента
-            await w.request_seek(pos_ms)
-            await w.wait_for_segment(idx, timeout=5.0)
-    except Exception:
-        # не падаем клиенту по ошибке перегенерации, ниже отдадим 500 если нет файла
-        pass
+        # повторная проверка
+        if not seg_path.exists():
+            return Response(status_code=503, headers={"Retry-After": "1"}, content=b"")
 
-    if not seg_path.exists():
-        raise HTTPException(500, "segment not created")
-
-    # отдать (X-Accel internal)
-    return Response(
-        status_code=200,
-        headers={
-            "X-Accel-Redirect": f"/internal_streams/{sid}/{filename}",
-            "Content-Type": "video/MP2T"
-        }
-    )
+    # файл доступен — читаем и возвращаем
+    data = seg_path.read_bytes()
+    return Response(content=data, media_type="video/MP2T")

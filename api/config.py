@@ -16,12 +16,22 @@ YTDLP = "yt-dlp.exe"
 JS_RUNTIME = "node"
 FFMPEG = "ffmpeg.exe"
 
+AUDIO_SINK_OUTPUT_DEVICE = "CABLE Output (VB-Audio Virtual Cable)"
+
 HLS_OPTS = {
     "hls_time": "4",
     "hls_list_size": "0",
     "hls_playlist_type": "vod",
     "hls_flags": "independent_segments",
 }
+
+SPOTIFY_HLS_OPTS = {
+    "hls_time": "6",
+    "hls_list_size": "0",
+    "hls_playlist_type": "event",
+    "prefetch": "0",
+}
+
 AUDIO_TARGET = {
     "codec": "aac",
     "profile": "aac_low",

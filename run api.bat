@@ -2,7 +2,7 @@
 chcp 65001 >nul
 
 REM FastAPI 
-start "api" cmd /k uvicorn api.main:app --host 127.0.0.1 --port 5000
+start "api" cmd /k uvicorn api.main:app --host 127.0.0.1 --port 5000 --workers 4
 
 echo.
 echo ===============================

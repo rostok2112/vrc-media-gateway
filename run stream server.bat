@@ -7,10 +7,11 @@ echo ===============================
 echo.
 
 REM nginx
+taskkill /F /IM nginx.exe
 start "nginx" cmd /k nginx -c main.conf
 
 REM FastAPI
-start "api" cmd /k uvicorn api.main:app --host 127.0.0.1 --port 5000
+start "api" cmd /k uvicorn api.main:app --host 127.0.0.1 --port 5000 --workers 4 --reload
 
 REM cloudflared QUICK TUNNEL
 if not exist logs mkdir logs

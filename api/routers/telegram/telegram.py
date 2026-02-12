@@ -1,8 +1,7 @@
 from fastapi import APIRouter, Query, Response, HTTPException
-import hashlib
-
-from fastapi.responses import JSONResponse
 from api import config, utils
+from api.routers.telegram import utils as telegram_utils
+
 
 router = APIRouter()
 
@@ -78,7 +77,7 @@ async def stream_tg_video(url: str = Query(...)):
 
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
-        video = await utils.download_tg_video(url)
+        video = await telegram_utils.download_tg_video(url)
         utils.video_to_hls(video, out_dir, sid)
 
         return Response(status_code=200, headers={
@@ -93,7 +92,7 @@ async def stream_tg_video(url: str = Query(...)):
 @router.get("/resolve-tg-public-link")
 async def resolve_tg_public_link(internal: str = Query(...)):
     try:
-        link = await utils.resolve_public_tg_link(internal)
+        link = await telegram_utils.resolve_public_tg_link(internal)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

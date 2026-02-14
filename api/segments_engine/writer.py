@@ -268,6 +268,56 @@ class StreamWriter:
 
                     if idx > last_seen:
                         log.info("SEGMENT WRITTEN sid=%s idx=%s", self.sid, idx)
+
+                        # ------------------ LIVE START POINT WITH PREFETCH DELAY ------------------
+                        # Мы должны установить playback start_time не тогда, когда сгенерировался первый файл,
+                        # а тогда, когда writer достиг глубины prefetch (т.е. когда первый сегмент реально
+                        # готов быть отдан клиенту, с учётом предзагрузки следующих сегментов).
+                        try:
+                            meta_path = self.out_dir / "metadata.json"
+                            try:
+                                import json as _json
+                                if meta_path.exists():
+                                    meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+                                else:
+                                    meta = {}
+                            except Exception:
+                                meta = {}
+
+                            # безопасный read/get prefetch (из конфига)
+                            try:
+                                from api import config as _config
+                                prefetch = int(_config.SPOTIFY_HLS_OPTS.get("prefetch", 0))
+                            except Exception:
+                                prefetch = 0
+                            if prefetch < 0:
+                                prefetch = 0
+
+                            # Если start_time ещё не записан, и мы достигли глубины prefetch -> установим start_time = now
+                            if "start_time" not in meta and idx >= prefetch:
+                                from datetime import datetime, timezone, timedelta as _td
+
+                                # момент «выпуска» первого сегмента клиенту — текущая wallclock
+                                playback_start = datetime.now(timezone.utc)
+
+                                # записываем старт времени и seg_time/total если надо
+                                meta["start_time"] = playback_start.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+                                meta.setdefault("segment_time", int(getattr(self, "segment_time", 6)))
+                                # total_segments не трогаем если его нет — он уже может быть установлен другими частями системы
+
+                                try:
+                                    tmp = meta_path.with_suffix(".tmp")
+                                    tmp.write_text(_json.dumps(meta), encoding="utf-8")
+                                    tmp.replace(meta_path)
+                                    log.info("LIVE PLAYBACK STARTED sid=%s at idx=%s (prefetch=%s) start_time=%s",
+                                            self.sid, idx, prefetch, meta["start_time"])
+                                except Exception:
+                                    log.exception("Failed to write metadata.start_time for sid=%s", self.sid)
+                        except Exception:
+                            # DO NOT crash writer loop on metadata errors
+                            log.exception("Error while computing/writing start_time for sid=%s", self.sid)
+                        # ------------------ END LIVE START POINT BLOCK --------------------------------
+
                         async with self._cond:
                             for new_idx in range(last_seen + 1, idx + 1):
                                 last_seen = new_idx

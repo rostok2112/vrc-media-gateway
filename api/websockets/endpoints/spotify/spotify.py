@@ -2,7 +2,6 @@ import asyncio
 import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from api import utils
-from api.segments_engine.registry import stop_writer
 from api.websockets.clients_name import ClientName
 from api.websockets.registry import ws_registry
 

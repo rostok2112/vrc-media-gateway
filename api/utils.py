@@ -1,6 +1,10 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 import hashlib
+import json
 import math
+import os
+import tempfile
 import time
 import re
 import subprocess
@@ -16,6 +20,12 @@ from telethon.tl.custom.message import Message
 from telethon.tl.types import Message as TelethonMessage, PeerChannel
 
 from api import config
+
+import logging
+
+from api.segments_engine import registry
+
+logger = logging.getLogger(__name__)
 
 
 # =========================
@@ -259,4 +269,88 @@ def build_virtual_m3u8(sid: str, duration_ms: int, seg_time: int) -> str:
         lines.append(f"/api/stream-spotify-segment/{sid}/segment_{i:05d}.ts")
 
     lines.append("#EXT-X-ENDLIST")
+    return "\n".join(lines)
+
+def atomic_write(path: Path, text: str):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent))
+    os.close(fd)
+    tmp_path = Path(tmp)
+    tmp_path.write_text(text, encoding="utf-8")
+    tmp_path.replace(path)
+
+def read_metadata(out_dir: Path) -> dict:
+    meta_path = out_dir / "metadata.json"
+    if not meta_path.exists():
+        return {}
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("Failed to read metadata.json at %s", meta_path)
+        return {}
+
+def build_live_m3u8(out_dir: Path, now_dt: Optional[datetime] = None, window_seconds: Optional[int] = 300) -> str:
+    now = now_dt or datetime.now(timezone.utc)
+    meta = read_metadata(out_dir)
+    seg_time = int(meta.get("segment_time", getattr(config, "SPOTIFY_SEG_TIME", int(config.SPOTIFY_HLS_OPTS.get("hls_time", 6)))))
+
+    lines = ["#EXTM3U", "#EXT-X-VERSION:3", f"#EXT-X-TARGETDURATION:{seg_time}"]
+
+    # If no metadata at all -> expose only first-segment URL to trigger writer
+    if not meta:
+        lines.append("#EXT-X-MEDIA-SEQUENCE:0")
+        lines.append(f"#EXTINF:{seg_time:.3f},")
+        lines.append(f"/api/stream-spotify-segment/{out_dir.name}/segment_00000.ts")
+        return "\n".join(lines)
+
+    start_time_str = meta.get("start_time")
+    total_segments = meta.get("total_segments", None)
+
+    # If start_time absent -> only expose first segment url
+    if not start_time_str:
+        lines.append("#EXT-X-MEDIA-SEQUENCE:0")
+        lines.append(f"#EXTINF:{seg_time:.3f},")
+        lines.append(f"/api/stream-spotify-segment/{out_dir.name}/segment_00000.ts")
+        return "\n".join(lines)
+
+    # parse start_time and compute published_count
+    st = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+    elapsed = (now - st).total_seconds()
+    published_count = int(elapsed // seg_time) + 1 if elapsed >= 0 else 0
+    if total_segments is not None:
+        published_count = min(published_count, int(total_segments))
+
+    # present files
+    files = sorted(out_dir.glob("segment_*.ts"))
+    present_indices = [int(p.name.replace("segment_", "").replace(".ts", "")) for p in files if p.exists() and p.stat().st_size > 0]
+
+    if not present_indices:
+        lines.append("#EXT-X-MEDIA-SEQUENCE:0")
+        return "\n".join(lines)
+
+    first_written = min(present_indices)
+    last_written = max(present_indices)
+    last_publish_idx = min(last_written, published_count - 1) if published_count > 0 else -1
+
+    if last_publish_idx < first_written:
+        lines.append(f"#EXT-X-MEDIA-SEQUENCE:{first_written}")
+        return "\n".join(lines)
+
+    max_back_segments = math.ceil(window_seconds / seg_time) if window_seconds and window_seconds > 0 else None
+    if max_back_segments is None:
+        start_idx = first_written
+    else:
+        start_idx = max(first_written, last_publish_idx - max_back_segments + 1)
+
+    lines.append(f"#EXT-X-MEDIA-SEQUENCE:{start_idx}")
+
+    for idx in range(start_idx, last_publish_idx + 1):
+        seg_start = st + timedelta(seconds=idx * seg_time)
+        lines.append(f"#EXT-X-PROGRAM-DATE-TIME:{seg_start.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]}Z")
+        lines.append(f"#EXTINF:{seg_time:.3f},")
+        lines.append(f"/api/stream-spotify-segment/{out_dir.name}/segment_{idx:05d}.ts")
+
+    if total_segments is not None and published_count >= int(total_segments):
+        lines.append("#EXT-X-ENDLIST")
+
     return "\n".join(lines)

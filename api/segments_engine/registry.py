@@ -157,3 +157,39 @@ async def stop_writer(sid: str):
 async def set_total_segments(sid: str, total: int):
     w = await get_or_create_writer(sid)
     await w.set_total_segments(total)
+
+def start_writer_background(sid: str, start_position_ms: int = 0):
+    """
+    Fire-and-forget writer start.
+    Can be safely called from HTTP endpoint.
+    Does NOT block.
+    """
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No loop -> nothing we can do
+        return False
+
+    async def _bg():
+        try:
+            # get writer (creates if missing)
+            w = await get_or_create_writer(sid, kind="spotify")
+
+            # already running?
+            if w._is_running():
+                return
+
+            seg_time = w.segment_time
+            start_index = int(start_position_ms // 1000 // seg_time)
+            start_ms = start_index * seg_time * 1000
+
+            # this is actual ffmpeg start
+            await w._start_at(start_index, start_ms)
+
+        except Exception:
+            log.exception("start_writer_background failed sid=%s", sid)
+
+    loop.create_task(_bg())
+    return True
+

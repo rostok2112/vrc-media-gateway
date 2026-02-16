@@ -26,11 +26,14 @@ HLS_OPTS = {
 }
 
 SPOTIFY_HLS_OPTS = {
-    "hls_time": "6",
+    "hls_time": "3",
     "hls_list_size": "0",
     "hls_playlist_type": "event",
-    "prefetch": "4",
+    "prefetch": "5",
 }
+
+FFMPEG_INPUT_ARGS = ["-f", "dshow", "-i", "audio=CABLE Output (VB-Audio Virtual Cable)"]  # example for Windows
+FFMPEG_AUDIO_ARGS = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
 
 AUDIO_TARGET = {
     "codec": "aac",

@@ -1,4 +1,5 @@
 import asyncio
+import math
 import subprocess
 import time
 from pathlib import Path
@@ -10,9 +11,13 @@ from api.segments_engine.types import AudioSourceAdapter
 log = logging.getLogger("segments.writer")
 
 
+
 class StreamWriter:
     """
-    Continuous segment writer with explicit stop/seek API.
+    StreamWriter using ffmpeg HLS muxer to produce:
+      - playlist.m3u8
+      - segment_00000.ts, segment_00001.ts, ...
+    Designed for AVPro/VRChat: mpegts + aac, sliding window.
     """
 
     def __init__(
@@ -22,198 +27,98 @@ class StreamWriter:
         ffmpeg_bin: str,
         input_args: List[str],
         audio_codec_args: List[str],
-        segment_time: int,
-        source_adapter: AudioSourceAdapter,
-        total_segments: Optional[int] = None,
+        segment_time: int = 3,
+        source_adapter: AudioSourceAdapter = None,
+        hls_list_size: int = 6,
     ):
         self.sid = sid
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
         self.ffmpeg_bin = ffmpeg_bin
-        self.input_args = input_args
-        self.audio_codec_args = audio_codec_args
-        self.segment_time = segment_time
+        self.input_args = input_args[:]  # e.g. ["-f", "dshow", "-i", "audio=..."]
+        self.audio_codec_args = audio_codec_args[:]  # e.g. ["-c:a","aac","-b:a","192k"]
+        self.segment_time = int(segment_time)
         self.source = source_adapter
 
-        self.total_segments: Optional[int] = total_segments
+        self.hls_list_size = int(hls_list_size)
 
         self.proc: Optional[subprocess.Popen] = None
         self._watch_task: Optional[asyncio.Task] = None
 
-        self._ctrl_lock = asyncio.Lock()
-        self._cond = asyncio.Condition()
+        self._stop_requested = False
 
-        self._next_index = self._discover_next_index()
+        log.info("HLS StreamWriter created sid=%s seg_time=%s list_size=%s", sid, self.segment_time, self.hls_list_size)
 
-        self._stop_after_index: Optional[int] = None
-        self._forced_stop_after_index: Optional[int] = None
-        self._pending_seek_ms: Optional[int] = None
+    def _playlist_path(self) -> Path:
+        return self.out_dir / "playlist.m3u8"
 
-        log.info("Writer created sid=%s segment_time=%s", self.sid, self.segment_time)
+    def _first_segment_path(self) -> Path:
+        return self.out_dir / "segment_00000.ts"
 
-    # -------------------------------------------------
+    def is_running(self) -> bool:
+        return self.proc is not None and self._watch_task is not None and not self._watch_task.done()
 
-    def _discover_next_index(self) -> int:
-        files = sorted(self.out_dir.glob("segment_*.ts"))
-        if not files:
-            return 0
-        try:
-            last = files[-1].name
-            n = int(last.replace("segment_", "").replace(".ts", ""))
-            return n + 1
-        except Exception:
-            return len(files)
-
-    def _seg_path(self, idx: int) -> Path:
-        return self.out_dir / f"segment_{idx:05d}.ts"
-
-    def _segment_exists(self, idx: int) -> bool:
-        p = self._seg_path(idx)
-        try:
-            return p.exists() and p.stat().st_size > 1024
-        except Exception:
-            return False
-
-    def _is_running(self) -> bool:
-        return (
-            self.proc is not None
-            and self._watch_task is not None
-            and not self._watch_task.done()
-        )
-
-    # -------------------------------------------------
-
-    async def ensure_segment(self, idx: int, timeout: float = 20.0):
-        path = self._seg_path(idx)
-        if path.exists() and path.stat().st_size > 1024:
+    async def start(self, start_position_ms: int = 0):
+        """
+        Start ffmpeg HLS muxer writing playlist + segments.
+        Uses ffmpeg's -f hls with mpegts segments and append_list/delete_segments flags.
+        """
+        if self.is_running():
+            log.debug("Start called but already running sid=%s", self.sid)
             return
 
-        await self._ensure_running_at_index(idx)
-
-        ok = await self._wait_for_segment(idx, timeout)
-        if not ok:
-            raise RuntimeError(f"timeout waiting for segment {idx}")
-
-    async def wait_for_segment(self, idx: int, timeout: float = 20.0) -> bool:
-        return await self._wait_for_segment(idx, timeout)
-
-    async def request_seek(self, position_ms: int, stop_after_idx: int | None = None):
-        async with self._ctrl_lock:
-
-            # СБРОС старых стопов (КРИТИЧНО)
-            self._stop_after_index = None
-
-            if not self._is_running():
-                start_index = int(position_ms // 1000 // self.segment_time)
-                await self._start_at(start_index, position_ms)
-                if stop_after_idx is not None:
-                    self._stop_after_index = int(stop_after_idx)
-                return
-
-            # планируем seek
-            self._pending_seek_ms = int(position_ms)
-
-            current_idx = max(0, self._next_index)
-
-            # ждём окончания текущего сегмента
-            self._stop_after_index = current_idx
-
-            if stop_after_idx is not None:
-                self._forced_stop_after_index = int(stop_after_idx)
-
-    async def stop(self):
-        async with self._ctrl_lock:
-            if self._is_running():
-                current_idx = max(0, self._next_index)
-                self._stop_after_index = current_idx
-
-    # -------------------------------------------------
-
-    async def _ensure_running_at_index(self, idx: int):
-        async with self._ctrl_lock:
-            if self._segment_exists(idx):
-                return
-
-            if self._is_running():
-                if self._next_index > idx:
-                    return
-                return
-
-            start_ms = idx * self.segment_time * 1000
-            await self._start_at(idx, start_ms)
-
-    async def _start_at(self, start_index: int, position_ms: int):
-        """
-        Start ffmpeg writing from start_index. Safety measures:
-        - сбрасываем старые stop-флаги
-        - удаляем 0-байт файлы на первых индексах (чтобы -n не ломал ffmpeg)
-        - перепрыгиваем уже существующие ВАЛИДНЫЕ сегменты (не трогаем >1KB)
-        - логируем быстрые падения ffmpeg
-        """
-        # СБРОС старых стоп-флагов — критично
-        self._forced_stop_after_index = None
-        if self.total_segments is not None:
-            # последний индекс сегмента
-            self._stop_after_index = int(self.total_segments)
-
-        # Найти первый индекс, который либо отсутствует, либо битый (0 байт)
-        i = start_index
-        for _ in range(1000):
-            p = self._seg_path(i)
+        # Prepare audio source position (adapter should handle Spotify device sync)
+        if self.source is not None:
             try:
-                if p.exists():
-                    # если файл 0 байт — удалим его (это placeholder от старого ffmpeg)
-                    try:
-                        if p.stat().st_size == 0:
-                            p.unlink(missing_ok=True)
-                            break  # после удаления можем использовать этот индекс
-                    except Exception:
-                        # ignore fs races
-                        pass
-
-                    # если валидный (больше порога) — пропускаем (не перезаписываем)
-                    try:
-                        if p.exists() and p.stat().st_size > 1024:
-                            i += 1
-                            continue
-                    except Exception:
-                        i += 1
-                        continue
-                else:
-                    break
+                await self.source.prepare_position(start_position_ms)
             except Exception:
-                break
-
-        start_index = i
-
-        # Prepare audio source to required position
-        await self.source.prepare_position(position_ms)
+                log.exception("source.prepare_position failed sid=%s", self.sid)
 
         seg_pattern = str(self.out_dir / "segment_%05d.ts")
+        playlist = str(self.out_dir / "playlist.m3u8")
 
+        # FFmpeg HLS muxer command
         cmd = [
             self.ffmpeg_bin,
-            "-n",  # <<< НЕ перезаписывать существующие файлы
             *self.input_args,
-            "-vn",
+            "-vn",  # audio only
             *self.audio_codec_args,
-            "-f",
-            "segment",
-            "-segment_time",
-            str(self.segment_time),
-            "-segment_format",
-            "mpegts",
-            "-reset_timestamps",
-            "1",
-            "-segment_start_number",
-            str(start_index),
-            seg_pattern,
+            "-f", "hls",
+            "-hls_time", str(self.segment_time),
+            "-hls_list_size", str(self.hls_list_size),
+            "-hls_flags", "append_list+delete_segments+omit_endlist",
+            "-hls_allow_cache", "0",
+            "-hls_segment_type", "mpegts",
+            "-hls_segment_filename", seg_pattern,
+            playlist,
         ]
 
-        log.warning("FFMPEG START sid=%s start_index=%s position_ms=%s cmd=%s", self.sid, start_index, position_ms, " ".join(cmd[:6]) + " ...")
+        log.info("Starting ffmpeg HLS sid=%s cmd=\"%s ...\"", self.sid, " ".join(cmd[:8]))
 
-        # аккуратно убиваем старый процесс если есть
+        # ensure no stale playlist/segments remain to confuse client
+        try:
+            for f in list(self.out_dir.glob("segment_*.ts")):
+                try:
+                    f.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            p = self._playlist_path()
+            if p.exists():
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        except Exception:
+            log.exception("Failed clearing old segments for sid=%s", self.sid)
+
+        # Launch ffmpeg
+        self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        loop = asyncio.get_event_loop()
+        self._watch_task = loop.create_task(self._watch_loop())
+
+    async def stop(self):
+        self._stop_requested = True
         if self.proc and self.proc.poll() is None:
             try:
                 self.proc.terminate()
@@ -228,169 +133,67 @@ class StreamWriter:
                     except Exception:
                         pass
 
-        # обновляем next index и стартуем ffmpeg
-        self._next_index = start_index
-
-        # START process (stderr kept so we can log quick failures)
-        # NOTE: keep stdout/stderr to DEVNULL normally; but we will detect early exit via poll()
-        self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        loop = asyncio.get_event_loop()
-        self._watch_task = loop.create_task(self._watch_loop())
-
-        # если был forced stop (например при backward seek), применим его
-        if self._forced_stop_after_index is not None:
-            try:
-                self._stop_after_index = int(self._forced_stop_after_index)
-            finally:
-                self._forced_stop_after_index = None
-
-        # quick-check: если процесс умер очень быстро — логируем это
-        await asyncio.sleep(0.05)
-        if self.proc is not None and self.proc.poll() is not None:
-            # ffmpeg вышел сразу — логим и raise, чтобы registry/endpoint поймали и попытались рефорсить
-            log.error("FFMPEG exited immediately (rc=%s) for sid=%s start_index=%s", self.proc.poll(), self.sid, start_index)
-
     async def _watch_loop(self):
-        last_seen = self._next_index - 1
-
+        """
+        Monitor ffmpeg process and ensure we keep track of segments; if ffmpeg dies - log.
+        """
         try:
+            # wait until first segment + playlist appear or until ffmpeg dies
+            timeout = 10.0
+            start = time.time()
             while True:
-                # ЕСЛИ следующий сегмент уже существует — стоп (не перезаписывать)
-                if self._segment_exists(last_seen + 1):
-                    self._stop_after_index = last_seen
+                if self.proc is None:
+                    break
+                if self.proc.poll() is not None:
+                    log.error("ffmpeg exited early for sid=%s rc=%s", self.sid, self.proc.poll())
+                    break
+                # first segment available?
+                if self._first_segment_path().exists() and self._playlist_path().exists():
+                    log.info("HLS initial readiness for sid=%s", self.sid)
+                    break
+                if time.time() - start > timeout:
+                    log.warning("Timeout waiting for initial segment for sid=%s", self.sid)
+                    break
+                await asyncio.sleep(0.1)
 
-                files = sorted(self.out_dir.glob("segment_*.ts"))
-                if files:
+            # now main loop: check process aliveness, and if stopped - break
+            while True:
+                if self.proc is None or self.proc.poll() is not None:
+                    log.info("ffmpeg stopped for sid=%s", self.sid)
+                    break
+                if self._stop_requested:
+                    # terminate gracefully
                     try:
-                        idx = int(files[-1].name.replace("segment_", "").replace(".ts", ""))
-                    except Exception:
-                        idx = last_seen
-
-                    if idx > last_seen:
-                        log.info("SEGMENT WRITTEN sid=%s idx=%s", self.sid, idx)
-
-                        # ------------------ LIVE START POINT WITH PREFETCH DELAY ------------------
-                        # Мы должны установить playback start_time не тогда, когда сгенерировался первый файл,
-                        # а тогда, когда writer достиг глубины prefetch (т.е. когда первый сегмент реально
-                        # готов быть отдан клиенту, с учётом предзагрузки следующих сегментов).
-                        try:
-                            meta_path = self.out_dir / "metadata.json"
-                            try:
-                                import json as _json
-                                if meta_path.exists():
-                                    meta = _json.loads(meta_path.read_text(encoding="utf-8"))
-                                else:
-                                    meta = {}
-                            except Exception:
-                                meta = {}
-
-                            # безопасный read/get prefetch (из конфига)
-                            try:
-                                from api import config as _config
-                                prefetch = int(_config.SPOTIFY_HLS_OPTS.get("prefetch", 0))
-                            except Exception:
-                                prefetch = 0
-                            if prefetch < 0:
-                                prefetch = 0
-
-                            # Если start_time ещё не записан, и мы достигли глубины prefetch -> установим start_time = now
-                            if "start_time" not in meta and idx >= prefetch:
-                                from datetime import datetime, timezone, timedelta as _td
-
-                                # момент «выпуска» первого сегмента клиенту — текущая wallclock
-                                playback_start = datetime.now(timezone.utc)
-
-                                # записываем старт времени и seg_time/total если надо
-                                meta["start_time"] = playback_start.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-                                meta.setdefault("segment_time", int(getattr(self, "segment_time", 6)))
-                                # total_segments не трогаем если его нет — он уже может быть установлен другими частями системы
-
-                                try:
-                                    tmp = meta_path.with_suffix(".tmp")
-                                    tmp.write_text(_json.dumps(meta), encoding="utf-8")
-                                    tmp.replace(meta_path)
-                                    log.info("LIVE PLAYBACK STARTED sid=%s at idx=%s (prefetch=%s) start_time=%s",
-                                            self.sid, idx, prefetch, meta["start_time"])
-                                except Exception:
-                                    log.exception("Failed to write metadata.start_time for sid=%s", self.sid)
-                        except Exception:
-                            # DO NOT crash writer loop on metadata errors
-                            log.exception("Error while computing/writing start_time for sid=%s", self.sid)
-                        # ------------------ END LIVE START POINT BLOCK --------------------------------
-
-                        async with self._cond:
-                            for new_idx in range(last_seen + 1, idx + 1):
-                                last_seen = new_idx
-                                self._next_index = new_idx + 1
-                                self._cond.notify_all()
-
-                if self._stop_after_index is not None and last_seen >= self._stop_after_index:
-                    self._stop_after_index = None
-                    try:
-                        if self.proc and self.proc.poll() is None:
-                            self.proc.terminate()
+                        self.proc.terminate()
                     except Exception:
                         pass
-
-                    if self._pending_seek_ms is not None:
-                        pending = self._pending_seek_ms
-                        self._pending_seek_ms = None
-                        new_start_idx = int(pending // 1000 // self.segment_time)
-                        await asyncio.sleep(0.05)
-                        await self._start_at(new_start_idx, pending)
-                        last_seen = self._next_index - 1
-                        continue
-                    else:
-                        break
-
-                if self.proc and self.proc.poll() is not None:
                     break
-
-                await asyncio.sleep(0.15)
-
+                await asyncio.sleep(0.5)
+        except Exception:
+            log.exception("Watcher failed for sid=%s", self.sid)
         finally:
-            log.warning("WRITER STOPPED sid=%s", self.sid)
-            if self.proc and self.proc.poll() is None:
-                try:
-                    self.proc.terminate()
-                except Exception:
-                    pass
-
             self.proc = None
             self._watch_task = None
-
+            # on stop: optionally call adapter.on_stop
             try:
-                asyncio.get_event_loop().create_task(self.source.on_stop())
+                if self.source is not None:
+                    asyncio.get_event_loop().create_task(self.source.on_stop())
             except Exception:
                 pass
 
-    async def _wait_for_segment(self, idx: int, timeout: float = 20.0) -> bool:
-        deadline = time.time() + timeout
-
-        async with self._cond:
-            while time.time() < deadline:
-                p = self._seg_path(idx)
-                if p.exists() and p.stat().st_size > 1024:
-                    return True
-
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    break
-
+    # utility: wait for readiness (playlist + first segment)
+    async def wait_ready(self, timeout: float = 6.0) -> bool:
+        start = time.time()
+        while time.time() - start < timeout:
+            if self._playlist_path().exists() and self._first_segment_path().exists():
+                # small additional check size
                 try:
-                    await asyncio.wait_for(
-                        self._cond.wait(), timeout=min(1.0, remaining)
-                    )
-                except asyncio.TimeoutError:
+                    if self._first_segment_path().stat().st_size > 1024:
+                        return True
+                except Exception:
                     pass
-
+            # if ffmpeg died -> abort
+            if self.proc is not None and self.proc.poll() is not None:
+                return False
+            await asyncio.sleep(0.12)
         return False
-    
-    async def set_total_segments(self, total: int):
-        """
-        Установить общее количество сегментов (для авто-остановки в конце трека)
-        """
-        self.total_segments = total
-        # последний индекс сегмента
-        if total is not None and total > 0:
-            self._stop_after_index = total

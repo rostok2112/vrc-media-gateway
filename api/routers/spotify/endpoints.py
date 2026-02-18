@@ -1,12 +1,14 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
+import math
 from pathlib import Path
-from fastapi import APIRouter, Query, Response, HTTPException
+from fastapi import APIRouter, Query, Request, Response, HTTPException
+from fastapi.responses import RedirectResponse
 from api import config, utils
 from api.routers.spotify import utils  as spotify_utils
-from api.segments_engine.registry import ensure_segment, get_or_create_writer, set_total_segments, start_writer_background
-from api.segments_engine import utils as segments_engine_utils
+from api.segments_engine import registry
+
 
 import logging
 
@@ -16,102 +18,88 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.get("/stream-spotify")
-async def stream_spotify(url: str):
+async def stream_spotify(url: str, request: Request):
     sid = utils.sid_for_url(url)
-    out_dir = Path(utils.out_dir_for_sid(sid))
+
+    out_dir = utils.out_dir_for_sid(sid)
+    playlist = out_dir / "playlist.m3u8"
+    if playlist.exists():
+        return RedirectResponse(url=f"/api/stream-spotify-playlist/{sid}", status_code=302)
+    meta_path = out_dir / "metadata.json"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    meta_path = out_dir / "metadata.json"
-    index_path = out_dir / "index.m3u8"
+    if not meta_path.exists():
+        try:
+            duration_ms = await spotify_utils.get_duration_ms_via_ws(url)
+        except Exception:
+            raise HTTPException(400, "spotify load failed")
 
-    # 1) Ensure base metadata exists (no start_time)
-    meta = utils.read_metadata(out_dir)
-    if not meta:
-        # fetch duration if needed (your existing WS logic)
-        duration_ms = await spotify_utils.get_duration_ms_via_ws(url)
-        seg_time = int(getattr(config, "SPOTIFY_SEG_TIME", int(config.SPOTIFY_HLS_OPTS.get("hls_time", "6"))))
-        total_segments = int((duration_ms / 1000) // seg_time) + 1 if duration_ms else None
-        base_meta = {
-            "url": url,
-            "duration_ms": duration_ms,
-            "segment_time": seg_time,
-            "total_segments": total_segments
-        }
-        utils.atomic_write(meta_path, json.dumps(base_meta))
-        meta = base_meta
+        seg_time = int(config.SPOTIFY_HLS_OPTS.get("hls_time", 3))
+        total_segments = math.ceil(duration_ms / (seg_time * 1000))
+        meta = {"url": url, "segment_time": seg_time, "total_segments": total_segments, "start_time": None}
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
 
-    # 2) Best-effort: kick writer in background so first-seg generation starts fast.
+    # PREFETCH LOCK: read timeout from config; if <=0 then wait indefinitely
+    prefetch_timeout_cfg = config.SPOTIFY_HLS_OPTS.get("prefetch_timeout", None)
+    if prefetch_timeout_cfg is None:
+        prefetch_timeout = None
+    else:
+        try:
+            prefetch_timeout = float(prefetch_timeout_cfg)
+        except Exception:
+            prefetch_timeout = None
+
+    # if timeout <= 0 -> wait indefinitely, else wait up to timeout seconds
+    if prefetch_timeout is not None and prefetch_timeout <= 0:
+        prefetch_timeout = None
+
     try:
-        start_writer_background(sid, start_position_ms=0)
+        prefetch_ok = await registry.start_prefetch(sid, timeout=prefetch_timeout)
+        if not prefetch_ok:
+            # prefetch timed out (if timeout provided) — still continue with redirect
+            logger.info("prefetch timed out (cfg=%s) for %s — continuing", prefetch_timeout_cfg, sid)
     except Exception:
-        logger.exception("start_writer_background failed for %s", sid)
+        logger.exception("start_prefetch failed — continuing")
 
-    # 3) ALWAYS regenerate playlist on each request (or at least when metadata newer).
-    #    This prevents stale index.m3u8 being served indefinitely.
-    try:
-        m3u8 = utils.build_live_m3u8(out_dir, now_dt=datetime.now(timezone.utc), window_seconds=300)
-        utils.atomic_write(index_path, m3u8)
-        logger.debug("INDEX GENERATED sid=%s len=%d", sid, len(m3u8))
-    except Exception:
-        logger.exception("Failed to build/write m3u8 for sid=%s", sid)
-        # fallback: if index exists, serve it; otherwise error
-        if index_path.exists():
-            return Response(index_path.read_text(encoding="utf-8"), media_type="application/vnd.apple.mpegurl")
-        raise HTTPException(status_code=500, detail="failed to build playlist")
+    return RedirectResponse(url=f"/api/stream-spotify-playlist/{sid}", status_code=302)
 
-    # 4) Prefer X-Accel-Redirect if nginx internal mapping configured (keeps nginx serving)
-    #    Otherwise return content directly.
-    try:
-        # if you rely on nginx internal location `/internal_streams/`, use header
-        return Response(status_code=200, headers={
-            "X-Accel-Redirect": f"/internal_streams/{sid}/index.m3u8",
+
+@router.get("/stream-spotify-playlist/{sid}")
+async def playlist(sid: str):
+    playlist = utils.out_dir_for_sid(sid) / "playlist.m3u8"
+    if not playlist.exists():
+        raise HTTPException(503, "playlist not ready")
+
+    # Ask nginx to serve from /streams/ (your nginx uses alias -> html/streams)
+    return Response(
+        content="",
+        headers={
+            "X-Accel-Redirect": f"/streams/{sid}/playlist.m3u8",
             "Content-Type": "application/vnd.apple.mpegurl"
-        })
-    except Exception:
-        # fallback direct body
-        return Response(m3u8, media_type="application/vnd.apple.mpegurl")
+        },
+        status_code=200
+    )
+
 
 @router.get("/stream-spotify-segment/{sid}/{filename}")
-async def stream_spotify_segment(sid: str, filename: str):
-    out_dir = utils.out_dir_for_sid(sid)
-    seg_path = out_dir / filename
-
-    try:
-        idx = int(filename.replace("segment_", "").replace(".ts", ""))
-    except Exception:
+async def segment(sid: str, filename: str):
+    # validate
+    if not filename.startswith("segment_") or not filename.endswith(".ts"):
         raise HTTPException(400, "bad filename")
+    idx = int(filename.replace("segment_", "").replace(".ts", ""))
 
-    # remove 0-byte placeholder
+    # Block until this segment exists — this is the real prefetch gating
     try:
-        if seg_path.exists() and seg_path.stat().st_size == 0:
-            try:
-                seg_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+        await registry.ensure_segment(sid, idx)
     except Exception:
-        pass
+        raise HTTPException(503, "segment generation failed")
 
-    # ensure segment exists (this triggers writer start/seek/prefetch logic)
-    try:
-        await ensure_segment(sid, idx)
-    except Exception:
-        # if ensure_segment failed — try seek/regenerate as fallback
-        try:
-            w = await get_or_create_writer(sid, kind="spotify")
-            pos_ms = idx * w.segment_time * 1000
-            await w.request_seek(pos_ms)
-            await w.wait_for_segment(idx, timeout=5.0)
-        except Exception:
-            pass
-
-    if not seg_path.exists() or seg_path.stat().st_size == 0:
-        # still missing -> inform client to retry later
-        raise HTTPException(503, "segment not ready")
-
+    # serve via nginx internal
     return Response(
-        status_code=200,
+        content="",
         headers={
-            "X-Accel-Redirect": f"/internal_streams/{sid}/{filename}",
+            "X-Accel-Redirect": f"/streams/{sid}/{filename}",
             "Content-Type": "video/MP2T"
-        }
+        },
+        status_code=200
     )

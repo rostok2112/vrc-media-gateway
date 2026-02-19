@@ -26,11 +26,11 @@ HLS_OPTS = {
 }
 
 SPOTIFY_HLS_OPTS = {
-    "hls_time": 3,
+    "hls_time": 2,
     "hls_list_size": "0",
     "hls_playlist_type": "event",
     "prefetch_timeout": 0, 
-    "prefetch": 3,
+    "prefetch": 7,
 }
 
 AUDIO_TARGET = {

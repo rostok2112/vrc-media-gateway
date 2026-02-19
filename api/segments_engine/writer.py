@@ -1,6 +1,8 @@
 import asyncio
 from datetime import datetime, timezone
 import json
+import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -44,6 +46,9 @@ class StreamWriter:
         self._prefetch_target = int(prefetch)
         self._prefetch_ready = asyncio.Event()
         self._start_time_written = False
+
+        self._vod_convert_task: Optional[asyncio.Task] = None
+        self._vod_convert_lock = asyncio.Lock()
 
         # internal counters
         self._last_seen_index = -1
@@ -104,7 +109,7 @@ class StreamWriter:
             "-f", "hls",
             "-hls_time", str(self.segment_time),
             "-hls_list_size", "0",  # LIVE sliding window like working variant
-            "-hls_flags", "append_list+delete_segments+omit_endlist",
+            "-hls_flags", "append_list+omit_endlist",
             "-hls_segment_type", "mpegts",
             "-hls_base_url", base_url,
             "-hls_segment_filename", seg_pattern,
@@ -194,6 +199,14 @@ class StreamWriter:
                                     txt = pl.read_text(encoding="utf-8")
                                     if "#EXT-X-ENDLIST" not in txt:
                                         pl.write_text(txt.strip() + "\n#EXT-X-ENDLIST\n", encoding="utf-8")
+
+                                    # Schedule VOD conversion (guarded so we don't start twice)
+                                    try:
+                                        if not self._vod_convert_task or self._vod__convert_task.done():
+                                            # create background task (no await) — it will wait 5s internally
+                                            self._vod_convert_task = asyncio.get_event_loop().create_task(self._convert_to_vod())
+                                    except Exception:
+                                        log.exception("failed scheduling VOD convert task")
                             except Exception:
                                 log.exception("failed to finalize playlist")
 
@@ -238,12 +251,99 @@ class StreamWriter:
                 return True
             if self.proc and self.proc.poll() is not None:
                 return False
+            
             await asyncio.sleep(0.1)
         return False
 
     async def stop(self):
+
+        # stop ffmpeg
         if self.proc and self.proc.poll() is None:
             try:
                 self.proc.terminate()
             except Exception:
                 pass
+
+            try:
+                self.proc.wait(timeout=2)
+            except Exception:
+                pass
+
+        # cancel watcher
+        if self._watch_task and not self._watch_task.done():
+            self._watch_task.cancel()
+            try:
+                await self._watch_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+
+        self._watch_task = None
+
+        # cancel delayed VOD conversion (important)
+        try:
+            if hasattr(self, "_vod_сonvert_task") and self._vod_convert_task and not self._vod_convert_task.done():
+                self._vod_convert_task.cancel()
+                try:
+                    await self._vod_convert_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+        except Exception:
+            log.exception("failed to cancel vod task")
+
+        self._vod_convert_task = None
+
+        # wake ensure_segment waiters
+        async with self._cond:
+            self._cond.notify_all()
+
+        self.proc = None
+
+        try:
+            await self.source.on_stop()
+        except Exception:
+            pass
+    
+    async def _convert_to_vod(self):
+
+        async with self._vod_convert_lock:
+
+            delay = ((self._prefetch_target + 1) * self.segment_time )   # wait for gap
+            await asyncio.sleep(delay)
+
+            if self.proc:
+                try:
+                    self.proc.wait(timeout=2)
+                except Exception:
+                    pass
+
+            try:
+                pl = self._playlist()
+                if not pl.exists():
+                    return
+
+                lines = pl.read_text(encoding="utf-8").splitlines()
+                new = []
+                inserted = False
+
+                for l in lines:
+
+                    if l.startswith("#EXT-X-MEDIA-SEQUENCE"):
+                        new.append("#EXT-X-MEDIA-SEQUENCE:0")
+                        continue
+
+                    if (not inserted) and l.startswith("#EXT-X-TARGETDURATION"):
+                        new.append(l)
+                        new.append("#EXT-X-PLAYLIST-TYPE:VOD")
+                        inserted = True
+                        continue
+
+                    new.append(l)
+
+                pl.write_text("\n".join(new) + "\n", encoding="utf-8")
+
+            except Exception:
+                log.exception("VOD convert failed")

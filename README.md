@@ -38,7 +38,7 @@ https://<your-domain>.trycloudflare.com/api/stream-sc?url=<soundcloud-link>
 
 Install Python deps:
 ```bash
-pip install fastapi uvicorn[standard] requests telethon dotenv qrcode[pil] psutil
+pip install fastapi uvicorn[standard] requests telethon dotenv qrcode[pil] psutil winappaudiorouter
 ```
 
 Node.js check:

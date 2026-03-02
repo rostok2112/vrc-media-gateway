@@ -92,6 +92,7 @@ class StreamWriter:
         Start ffmpeg HLS muxer at a given position (calls source.prepare_position first)
         """
         # ask source to prepare (seek or start)
+        await self.source.on_start()
         await self.source.prepare_position(position_ms)
 
         playlist = str(self._playlist())
@@ -116,18 +117,7 @@ class StreamWriter:
             playlist
         ]
 
-        # cleanup old files (optional)
-        for f in self.out_dir.glob("segment_*.ts"):
-            try:
-                f.unlink()
-            except Exception:
-                pass
-        try:
-            if self._playlist().exists():
-                self._playlist().unlink()
-        except Exception:
-            pass
-
+        
         log.info("starting ffmpeg: %s", " ".join(cmd))
         self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self._watch_task = asyncio.get_event_loop().create_task(self._watch_loop())

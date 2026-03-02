@@ -15,7 +15,9 @@ CLOUDFLARED_LOG = LOGS / "cloudflared.log"
 YTDLP = "yt-dlp.exe"
 JS_RUNTIME = "node"
 FFMPEG = "ffmpeg.exe"
+SPOTIFY = "Spotify.exe"
 
+AUDIO_SINK_INPUT_DEVICE = "CABLE Input (VB-Audio Virtual Cable)"
 AUDIO_SINK_OUTPUT_DEVICE = "CABLE Output (VB-Audio Virtual Cable)"
 
 HLS_OPTS = {

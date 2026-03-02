@@ -76,7 +76,7 @@ Install Python deps:
 
 ```bash
 
-pip install fastapi uvicorn requests telethon dotenv qrcode\[pil]
+pip install fastapi uvicorn requests telethon dotenv qrcode\[pil] pycaw
 
 ```
 

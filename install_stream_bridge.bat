@@ -3,7 +3,6 @@ setlocal enabledelayedexpansion
 
 echo === Spicetify Stream Bridge installer ===
 
-REM получаем путь к папке Extensions
 for /f "delims=" %%i in ('spicetify path userdata --bypass-admin') do (
     set USERDATA=%%i
 )
@@ -19,7 +18,9 @@ if not exist "%EXT_DIR%" (
     exit /b 1
 )
 
-REM копируем extension
+echo Killing Spotify...
+taskkill /IM spotify.exe /F >nul 2>&1
+
 echo Copying stream_bridge.js...
 copy /Y "%~dp0spotify_extension\stream_bridge.js" "%EXT_DIR%\stream_bridge.js"
 
@@ -29,15 +30,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM включаем extension
 echo Enabling extension...
 spicetify config extensions stream_bridge.js --bypass-admin
 
-REM применяем
-echo Applying Spicetify...
-spicetify apply --bypass-admin
+echo Rebuilding Spicetify (backup + apply)...
+spicetify backup --bypass-admin
+spicetify apply --force --bypass-admin
 
 echo.
 echo DONE.
-echo Restart Spotify if it is running.
+echo Start Spotify.
 pause

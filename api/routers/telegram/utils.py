@@ -8,8 +8,7 @@ from telethon.sessions import StringSession
 from telethon.tl.custom.message import Message
 from telethon.tl.types import PeerChannel
 
-from api import config
-from api.utils import ensure_file
+from api import config, utils
 
 
 _TG_RE = re.compile(r"https?://t\.me/([^/]+)/(\d+)")
@@ -126,7 +125,7 @@ async def download_tg_video(url: str) -> Path:
 
     # Telethon can download directly to the file path
     await client.download_media(msg, file=str(target))
-    ensure_file(target)
+    utils.ensure_file(target)
 
     return target
 

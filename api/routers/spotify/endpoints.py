@@ -7,6 +7,7 @@ from fastapi import APIRouter, Query, Request, Response, HTTPException
 from fastapi.responses import RedirectResponse
 from api import config, utils
 from api.routers.spotify import utils  as spotify_utils
+
 from api.segments_engine import registry
 
 
@@ -62,6 +63,11 @@ async def stream_spotify(url: str, request: Request):
         logger.exception("start_prefetch failed — continuing")
 
     return RedirectResponse(url=f"/api/stream-spotify-playlist/{sid}", status_code=302)
+
+
+@router.post("/stream-spotify-clear")
+async def clear_spotify_cache(url: str):
+    return await spotify_utils.clear_spotify_cache(url)
 
 
 @router.get("/stream-spotify-playlist/{sid}")

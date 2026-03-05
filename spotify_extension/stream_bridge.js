@@ -302,40 +302,60 @@
       return btn;
     }
   
-    const vrBtn = createPill("VRChat", true);
+        const vrBtn = createPill("VRChat", true);
+    const clearBtn = createPill("Clear cache", false);
     const settingsBtn = createPill("Settings", false);
-  
-    // 🔥 VRChat кнопка
-    vrBtn.onclick = async () => {
+
+    async function withTrackUrl(btn, fn) {
       const openUrl = findOpenSpotifyUrl();
       if (!openUrl) {
-        flash(vrBtn, "No track");
-        return;
+        flash(btn, "No track");
+        return null;
       }
-    
-      const cfg = loadSettings();
-    
-      if (cfg.usePublicUrl && !cfg.globalUrl && !transientPublicUrl) {
-        await ensureTransientIfNeeded();
-      }
-    
-      const base = chooseBase();
-    
-      const link =
-        `${base.replace(/\/$/, "")}/api/stream-spotify?url=` +
-        encodeURIComponent(openUrl);
-    
-      const ok = await copyToClipboard(link);
-    
-      flash(vrBtn, ok ? "Copied ✓" : "Copy failed");
-    
-      console.log("[stream_bridge] copied", link);
+      return await fn(openUrl);
+    }
+
+    // VRChat button
+    vrBtn.onclick = async () => {
+      await withTrackUrl(vrBtn, async (openUrl) => {
+        const cfg = loadSettings();
+
+        if (cfg.usePublicUrl && !cfg.globalUrl && !transientPublicUrl) {
+          await ensureTransientIfNeeded();
+        }
+
+        const base = chooseBase();
+
+        const link =
+          `${base.replace(/\/$/, "")}/api/stream-spotify?url=` +
+          encodeURIComponent(openUrl);
+
+        const ok = await copyToClipboard(link);
+
+        flash(vrBtn, ok ? "Copied ✓" : "Copy failed");
+
+        console.log("[stream_bridge] copied", link);
+      });
     };
-  
-    // 🔥 Settings кнопка
+
+    // Clear cache button
+    clearBtn.onclick = async () => {
+      await withTrackUrl(clearBtn, async (openUrl) => {
+        const res = await wsRpc("clear_cache", { url: openUrl }, 4000);
+        if (res && res.ok) {
+          flash(clearBtn, "Cleared ✓");
+        } else {
+          flash(clearBtn, "Failed");
+        }
+      });
+    };
+
+    // Settings button
     settingsBtn.onclick = () => openSettingsModal();
+
   
     wrapper.appendChild(vrBtn);
+    wrapper.appendChild(clearBtn);
     wrapper.appendChild(settingsBtn);
   
     extra.insertBefore(wrapper, extra.firstChild);

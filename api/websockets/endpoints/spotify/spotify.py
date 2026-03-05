@@ -1,6 +1,7 @@
 import asyncio
 import json
 from api.routers.infrastructure.utils import get_latest_tunnel_url
+from api.routers.spotify import utils as spotify_utils
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from api import utils
 from api.websockets.clients_name import ClientName
@@ -27,6 +28,7 @@ async def spotify_ws(ws: WebSocket):
             if data.get("type") == "rpc_request":
                 rid = data.get("id")
                 method = data.get("method")
+                params = data.get("params") or {}
 
                 result = None
 
@@ -34,6 +36,11 @@ async def spotify_ws(ws: WebSocket):
                     result = {
                         "url": get_latest_tunnel_url()
                     }
+                elif method == "clear_cache":
+                    try:
+                        result = await spotify_utils.clear_spotify_cache(params.get("url"))
+                    except Exception as e:
+                        result = {"ok": False, "error": str(e)}
 
                 await ws.send_text(json.dumps({
                     "type": "rpc_response",

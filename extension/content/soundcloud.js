@@ -15,6 +15,53 @@
     );
   }
 
+  /* ---- New: detect if page is likely a single track page ---- */
+  function isLikelyTrackPage() {
+    try {
+      const parts = location.pathname.split('/').filter(Boolean);
+      // typical track url: /{user}/{track-slug}  => exactly 2 segments
+      if (parts.length !== 2) return false;
+
+      // blacklist common non-track second segments
+      const forbidden = new Set(['sets','likes','tracks','albums','reposts','groups','collections','search','discover','charts','upload','messages','notifications']);
+      if (forbidden.has(parts[1].toLowerCase())) return false;
+
+      // If og:type explicitly says it's music/song — strong indicator
+      const og = document.querySelector('meta[property="og:type"], meta[name="og:type"]');
+      if (og) {
+        const val = (og.getAttribute('content') || '').toLowerCase();
+        if (/song|music|track/.test(val)) return true;
+      }
+
+      // Check canonical link — if it's to a specific item with two segments it's ok
+      const canonical = document.querySelector('link[rel="canonical"]');
+      if (canonical) {
+        const href = canonical.getAttribute('href') || '';
+        if (SC_URL_RE.test(href)) {
+          const p = (new URL(href)).pathname.split('/').filter(Boolean);
+          if (p.length === 2 && !forbidden.has(p[1].toLowerCase())) return true;
+        }
+      }
+
+      // If there is a single .sound__header on page -> likely the single track view
+      const headers = document.querySelectorAll('.sound__header');
+      if (headers && headers.length === 1) return true;
+
+      // Fallback conservative check: presence of a large waveform element + single player area
+      const wf = document.querySelectorAll('.waveform, .playControls, .listenEngagement__actions');
+      if (wf && wf.length > 0) {
+        // but to avoid list items, ensure there is not an obvious list container dominating the page
+        const list = document.querySelector('.soundList, .profileTruncatedList, .searchResults');
+        if (!list) return true;
+      }
+
+      return false;
+    } catch (e) {
+      debug("isLikelyTrackPage err", e && e.message);
+      return false;
+    }
+  }
+
   function extractFirstScUrl(text) {
     if (!text || typeof text !== "string") return null;
     const m = text.match(SC_URL_RE);
@@ -26,16 +73,13 @@
   }
 
   function pickSoundCloudUrl(raw) {
-    // normalize: if already a URL string, try to extract the sc url
     if (!raw) return null;
     if (typeof raw !== "string") {
       try { raw = String(raw); } catch { return null; }
     }
     raw = raw.trim();
-    // direct parse attempt
     const direct = extractFirstScUrl(raw);
     if (direct) return direct;
-    // sometimes attributes have encoded forms
     try {
       const dec = decodeURIComponent(raw);
       const fromDec = extractFirstScUrl(dec);
@@ -65,7 +109,6 @@
         } catch {}
       }
     }
-    // also try innerText
     try {
       const url = pickSoundCloudUrl(el.innerText || el.textContent || "");
       if (url) return url;
@@ -77,7 +120,7 @@
     if (!root) return null;
     const inputs = root.querySelectorAll('input[type="text"], input[type="url"], textarea, input');
     for (const input of inputs) {
-      const val = input.value || input.getAttribute && input.getAttribute("value") || input.placeholder || input.getAttribute("aria-label");
+      const val = input.value || (input.getAttribute && input.getAttribute("value")) || input.placeholder || input.getAttribute("aria-label");
       const url = pickSoundCloudUrl(val);
       if (url) return url;
     }
@@ -97,7 +140,6 @@
         if (url) return url;
       } catch (err) {
         debug("clipboard.readText() failed on attempt", i, err && err.message);
-        // some browsers block readText unless user gesture; we'll still retry
       }
       await new Promise(r => setTimeout(r, delayMs));
     }
@@ -133,16 +175,13 @@
     document.addEventListener("copy", onCopy, true);
     cleanup.push(() => document.removeEventListener("copy", onCopy, true));
 
-    // attempt programmatic click (this is not a real user gesture but page's copy handler will run)
     try {
       btn.click();
     } catch (err) { debug("btn.click() failed", err && err.message); }
 
-    // short wait then try clipboard API (since page most likely put correct share link there)
     const fromClipboard = await tryClipboardRead(4, 200);
     if (fromClipboard) captured = fromClipboard;
 
-    // also try reading selection/active element (fallback)
     if (!captured) {
       const selText = getSelectedText();
       const url = pickSoundCloudUrl(selText);
@@ -152,7 +191,6 @@
       }
     }
 
-    // global search of document text (last resort)
     if (!captured) {
       const allText = document.body && document.body.innerText;
       const url = pickSoundCloudUrl(allText);
@@ -166,7 +204,6 @@
     return captured;
   }
 
-  // recursive search for secret-ish tokens in __sc_hydration objects
   function findKeyRecursively(obj, key) {
     if (!obj || typeof obj !== "object") return null;
     if (key in obj) return obj[key];
@@ -186,13 +223,11 @@
       for (const item of hyd) {
         const data = item && item.data;
         if (!data || typeof data !== "object") continue;
-        // look for permalink and either secret_token or s-<token> pattern
         const permalink = findKeyRecursively(data, "permalink_url")
           || findKeyRecursively(data, "permalink")
           || findKeyRecursively(data, "url");
         const secret = findKeyRecursively(data, "secret_token") || findKeyRecursively(data, "secret");
         if (permalink && secret) {
-          // try both constructions: query param and /s- form
           try {
             const base = String(permalink);
             const sep = base.includes("?") ? "&" : "?";
@@ -201,7 +236,6 @@
             return qForm;
           } catch {}
         }
-        // some hydration entries may already include a 'uri' or 'permalink' with /s- part
         const permalinkText = JSON.stringify(data);
         const maybe = extractFirstScUrl(permalinkText);
         if (maybe) return maybe;
@@ -221,14 +255,12 @@
       if (!modal) continue;
       const url = readUrlFromInputs(modal) || readUrlFromAttrs(modal);
       if (url) {
-        // try to close modal if possible
         const closeBtn = modal.querySelector('button[aria-label="Close"], button[title="Close"], .close, .sc-button-close');
         try { if (closeBtn) closeBtn.click(); } catch(e) {}
         debug("modal -> url", url);
         return url;
       }
     }
-    // fallback: scan document for inputs that may contain share url
     const fallback = readUrlFromInputs(document) || readUrlFromAttrs(document.body);
     if (fallback) {
       debug("modal fallback ->", fallback);
@@ -239,20 +271,17 @@
 
   async function resolveShareUrl() {
     debug("resolveShareUrl start", location.href);
-    // if already has s- token or secret_token, return directly
     if (/[?&]secret_token=/.test(location.href) || /\/s-[A-Za-z0-9_-]+/.test(location.href)) {
       debug("location already contains secret token ->", location.href);
       return location.href;
     }
 
-    // 1) hydration (fast)
     const hyd = hydrationShareUrl();
     if (hyd) {
       debug("strategy=hydration url=", hyd);
       return hyd;
     }
 
-    // 2) try to find copy link button
     const btn =
       document.querySelector(COPYLINK_SELECTOR) ||
       document.querySelector('button[aria-label="Copy Link"]') ||
@@ -260,14 +289,12 @@
 
     if (btn) {
       debug("found Copy Link button -> trying attrs/modal/clipboard");
-      // 2a) direct attrs (some versions store url in data-clipboard-text)
       const attrUrl = readUrlFromAttrs(btn);
       if (attrUrl) {
         debug("strategy=attrs url=", attrUrl);
         return attrUrl;
       }
 
-      // 2b) read input fields near the button
       const scope = btn.closest(".soundActions, .listenEngagement__actions, .sc-button-toolbar, .listenEngagement, .sc-button-group") || document;
       const inputUrl = readUrlFromInputs(scope);
       if (inputUrl) {
@@ -275,7 +302,6 @@
         return inputUrl;
       }
 
-      // 2c) try clicking copy and intercepting clipboard / copy event
       try {
         const captured = await captureCopyLink(btn);
         if (captured) {
@@ -284,7 +310,6 @@
         }
       } catch (err) { debug("captureCopyLink err", err && err.message); }
 
-      // 2d) try reading clipboard directly again just in case
       try {
         const cb = await tryClipboardRead(3, 200);
         if (cb) {
@@ -293,7 +318,6 @@
         }
       } catch (err) { debug("clipboard read err", err && err.message); }
 
-      // 2e) open share modal and read
       try {
         const modalUrl = await tryOpenShareModalAndRead();
         if (modalUrl) {
@@ -303,7 +327,6 @@
       } catch (err) { debug("share modal err", err && err.message); }
     } else {
       debug("Copy Link button NOT found; try opening share modal");
-      // try open share modal directly
       const modalUrl = await tryOpenShareModalAndRead();
       if (modalUrl) {
         debug("strategy=share-modal-no-copybtn url=", modalUrl);
@@ -311,7 +334,6 @@
       }
     }
 
-    // 3) global document text search (last resort)
     const allText = document.body && document.body.innerText;
     const global = pickSoundCloudUrl(allText);
     if (global) {
@@ -319,7 +341,6 @@
       return global;
     }
 
-    // fallback: return current location (public URL)
     debug("strategy=fallback location href", location.href);
     return location.href;
   }
@@ -431,6 +452,14 @@
   }
 
   function insertOrUpdate() {
+    // only show on pages that look like a single track
+    if (!isLikelyTrackPage()) {
+      // if button exists from previous navigation, remove it to avoid showing on profile/list pages
+      const prev = document.querySelector("." + BTN_CLASS);
+      if (prev) prev.remove();
+      return;
+    }
+
     const container = findContainer();
     if (!container) return;
     const group = container.querySelector(".sc-button-group") || container;
@@ -442,10 +471,11 @@
     group.appendChild(createButton());
   }
 
+  // initial run + observe SPA nav / DOM changes
   insertOrUpdate();
   new MutationObserver(insertOrUpdate).observe(document.body, { childList: true, subtree: true });
 
-  // styles (same as before)
+  // styles
   const style = document.createElement("style");
   style.textContent = `
     .vr-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); backdrop-filter: blur(4px); z-index: 999999; display: flex; align-items: center; justify-content: center; }

@@ -485,7 +485,32 @@ function flashTemp(el, txt, ms = 900) {
   
     const root = document.createElement("div");
     root.style.minWidth = "420px";
-    root.style.padding = "8px";
+    root.style.padding = "12px";
+    root.style.position = "relative";
+    root.style.overflow = "hidden";
+    root.style.borderRadius = "10px";
+    root.style.color = "white";
+
+    /* background image */
+    const bg = document.createElement("div");
+    bg.style.position = "absolute";
+    bg.style.inset = "0";
+    bg.style.background =
+    'url("data:image/jpeg;base64,/9j/2wBDAHJPVmRWR3JkXWSBeXKIq/+6q52dq//6/8//////////////////////////////////////////////////////2wBDAXmBgauWq/+6uv//////////////////////////////////////////////////////////////////////////wAARCAEZAPoDASIAAhEBAxEB/8QAGAABAQEBAQAAAAAAAAAAAAAAAAECAwT/xAAiEAEBAQACAgICAwEAAAAAAAAAARECMSFBElFhcQMiMpH/xAAUAQEAAAAAAAAAAAAAAAAAAAAA/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8A5AAAAAAAAAAAAAAKigCbPs2fYKAAAAAAoAAAAAAAyAAAAoAIoCCoACW4C24nyrIC7fsRQMM0XqAfonL7EBsZ3OmpdAVFAAAAAAAABkABQAAAAAABCTfJ3ca9Ax8TGqgJi4LAMLFAYFrIKfoQHQZ49Y0AAAAAAAADIKAAAAAAAAC8Z4tKsn9Izy7gILbGdBVjGrKDYkqglZxvtmzAZFQGuPbTHH/UbAAAAAAAABlUUAAAAAAAEy2+AavL1Gd2YzZi8L/YBK6Tpz5dgaustAssrUYagLDl0FBhGpPLWZ5BjjP7RtL4vjqqAAAAAqKAigMKigAAAAAAH4Fk2g5/Hx5Xj1+2rLbh7z6BZ0zyjXn6TlLnkGFiKDUVloAt8CUE4+eTVt9M8O2/GeQY3Wmc8/hoAFAAAAAABhUUAAAAAABv+Obyv6YWXLoHK/HlE9+D+Tzd+0gFv5/4ny8YhgBLi5+UoNzLGd9HG9p7BrT8ooE/013dYbnQAQAUAAAAAAAYVFAAAAAAAABLfH6WWeJPNqXtf4+MzQLwsvml+M/Jy/aeALd6jNW1kGp0z7X0gNQiLAVrj0zV49AqooAAAAAAAAMKAAAAAAAAAF7iRqMdUDl2i26yCoKB6RUBVRZxtA7bkyYSYoIoAAAAAAAAAyAAAAAAAAACxmxUoM0KAYqGgUk0k1uQCTFRQURQAqQFAAAAAAABkAAAAAAAAAAs0AYy/RONvUdF4/6gOd42dpj0WOPKZQI0zGoAAAoAJVSgmrqALsVhdBoZ+X21LoAAMgAAAAAAAAAAoBO4AOlc+cdKzfMBzjUZ9rAPaxlqAoACKUGai1mguiAKIoLKvyjICgAAAAAAAAAKLmAmNSYM2g6Xphu9MWAxy7CoCtMtADOroKM6aC1mrqAguGABhgAIDYAAAAACgASaYssgLmRm1bUoJSTaLLgOnpGfm1L4By5eKjfOedZ4zaC2Zhq8/NyJkgM+auFNAyAACAKqALrNoYCLiyKAAADXx+wZVcAQ0SgamhgNzzSp1DQVBAMNxKA1fMOMxnWvQLuJbqIAigAAAAAAIoAoigNTjv6OPHfN6aA66QAE0qWglRVwEkUAQAAAEqKgE7dPTPDzWrQZqLUAVFAABAAAAAAAAduolWs0BLS1m0C1BYCyCoAigAgACAIIDXC+Wqxx7aBBQAABAAEAUQAFAEUB1rNq1mglqACN8enN04/5BpFSgiKgCAAgAIqUGuEaxODVBEKAAgCKgAAAHoFCAAAP/9k=") center/cover no-repeat';
+    bg.style.backgroundPosition = "center -55px";
+    bg.style.filter = "blur(6px)";
+    bg.style.transform = "scale(1.1)";
+    bg.style.zIndex = "-2";
+
+    /* overlay */
+    const overlay = document.createElement("div");
+    overlay.style.position = "absolute";
+    overlay.style.inset = "0";
+    overlay.style.background = "rgba(0,0,0,0.35)";
+    overlay.style.zIndex = "-1";
+
+    root.appendChild(bg);
+    root.appendChild(overlay);
   
     function sectionTitle(text) {
       const el = document.createElement("div");

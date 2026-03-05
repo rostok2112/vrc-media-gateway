@@ -187,6 +187,43 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
       return;
     }
 
+    if (msg.action === "resolveBases") {
+      try {
+        const bases = await resolveBases();
+        sendResponse(bases);
+      } catch (e) {
+        console.log("[bg] resolveBases error:", e && e.message);
+        sendResponse({ error: e && e.message });
+      }
+      return;
+    }
+
+    if (msg.action === "clearSpotifyCache") {
+      try {
+        const url = msg.url;
+        if (!url) throw new Error("missing url");
+
+        const { fetchBase } = await resolveBases();
+        if (!fetchBase) throw new Error("No fetch base available");
+
+        const endpoint = "/api/stream-spotify-clear?url=" + encodeURIComponent(url);
+        const fetchUrl = fetchBase + endpoint;
+
+        console.log("[bg] clearSpotifyCache fetching:", fetchUrl);
+        const res = await fetch(fetchUrl, { method: "POST", cache: "no-store" });
+        if (!res.ok) {
+          const txt = await res.text();
+          throw new Error(`HTTP ${res.status}: ${txt}`);
+        }
+
+        sendResponse({ ok: true });
+      } catch (e) {
+        console.log("[bg] clearSpotifyCache error:", e && e.message);
+        sendResponse({ ok: false, error: e && e.message });
+      }
+      return;
+    }
+
     if (msg.action === "debugDump") {
       const s = await getSettings();
       console.log("[bg] debugDump ->", s);

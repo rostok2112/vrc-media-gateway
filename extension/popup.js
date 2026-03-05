@@ -212,6 +212,20 @@ document.addEventListener("DOMContentLoaded", () => {
       let endpoint;
       if (/soundcloud\.com|on\.soundcloud\.com/.test(src)) {
         endpoint = "/api/stream-sc?url=" + encodeURIComponent(src);
+      } else if (/open\.spotify\.com\/track|spotify:track:/.test(src)) {
+        const bases = await chrome.runtime.sendMessage({ action: "resolveBases" });
+        const base = (bases && (bases.resultBase || bases.fetchBase)) || "";
+        if (!base) throw new Error("No base URL");
+
+        const link =
+          `${base.replace(/\/$/, "")}/api/stream-spotify?url=` +
+          encodeURIComponent(src);
+
+        output.value = link;
+        await navigator.clipboard.writeText(link);
+        status.textContent = "Ready & copied ✓";
+        await savePopupState();
+        return;
       } else if (/youtube\.com|youtu\.be/.test(src)) {
         endpoint = "/api/stream-yt?url=" + encodeURIComponent(src);
       } else {

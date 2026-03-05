@@ -48,6 +48,11 @@
         "run_at": "document_idle"
       },
       {
+        "matches": ["*://open.spotify.com/*"],
+        "js": ["content/spotify.js"],
+        "run_at": "document_idle"
+      },
+      {
         "matches": ["<all_urls>"],
         "js": ["content/common_content.js"],
         "run_at": "document_start"

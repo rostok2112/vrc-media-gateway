@@ -344,8 +344,9 @@
   
     function createPill(text, green = false) {
       const btn = document.createElement("button");
-  
+
       btn.textContent = text;
+      btn.dataset.defaultLabel = text;
       btn.style.height = "32px";
       btn.style.padding = "0 16px";
       btn.style.borderRadius = "999px";
@@ -444,9 +445,18 @@ function flashTemp(el, txt, ms = 900) {
 }
 
   function flash(el, txt, ms = 900) {
-    const prev = el.textContent;
+    const fallback = el.dataset.defaultLabel || el.textContent;
+    const prevTimer = el.dataset.flashTimer;
+    if (prevTimer) {
+      try { clearTimeout(Number(prevTimer)); } catch {}
+      delete el.dataset.flashTimer;
+    }
     el.textContent = txt;
-    setTimeout(() => el.textContent = prev, ms);
+    const t = setTimeout(() => {
+      el.textContent = fallback;
+      delete el.dataset.flashTimer;
+    }, ms);
+    el.dataset.flashTimer = String(t);
   }
 
   async function copyToClipboard(text) {

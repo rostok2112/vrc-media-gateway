@@ -2,6 +2,11 @@
 (async function () {
   while (!window.Spicetify || !Spicetify.Player) await new Promise(r=>setTimeout(r,250));
   console.log("[stream_bridge] starting (popup logic port)");
+  if (window.__vrchat_stream_bridge_loaded) {
+    console.log("[stream_bridge] already loaded, skipping");
+    return;
+  }
+  window.__vrchat_stream_bridge_loaded = true;
 
   // Storage keys (mirror background/popup)
   const STORAGE_KEY = "vrchat_stream_bridge:settings_v1";
@@ -41,6 +46,8 @@
 
   // WS RPC helper (use existing WS connection)
   let ws = null;
+  let wsUrl = null;
+  let reconnectTimer = null;
   let pending = new Map();
   
   function buildWsUrl() {
@@ -91,20 +98,30 @@
     }
   }
   
-  function connectWS() {
+  function connectWS(force = false) {
+    const url = buildWsUrl();
+    if (!force && ws && (ws.readyState === 0 || ws.readyState === 1) && wsUrl === url) {
+      return;
+    }
+
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+
     if (ws) {
       try { ws.close(); } catch {}
       ws = null;
     }
-  
-    const url = buildWsUrl();
+
+    wsUrl = url;
     console.log("[stream_bridge] WS connecting to", url);
-  
+
     try {
       ws = new WebSocket(url);
     } catch (e) {
       console.error("[stream_bridge] WS create error", e);
-      setTimeout(connectWS, 2000);
+      reconnectTimer = setTimeout(() => connectWS(true), 2000);
       return;
     }
   
@@ -129,7 +146,10 @@
   
     ws.onclose = () => {
       console.log("[stream_bridge] WS closed");
-      setTimeout(connectWS, 2000);
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+      }
+      reconnectTimer = setTimeout(() => connectWS(true), 2000);
     };
   
     ws.onerror = e => console.warn("[stream_bridge] WS error", e);
@@ -208,6 +228,50 @@
       return null;
     }
   }
+  function ensureWsReady(timeout = 1500) {
+    return new Promise(resolve => {
+      if (ws && ws.readyState === 1) return resolve(true);
+
+      try {
+        if (!ws || ws.readyState === 3 || ws.readyState === 2) {
+          connectWS(true);
+        }
+      } catch {}
+
+      if (!ws) return resolve(false);
+
+      let done = false;
+      const onOpen = () => {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve(true);
+      };
+      const onClose = () => {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve(false);
+      };
+      const timer = setTimeout(() => {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve(false);
+      }, timeout);
+
+      function cleanup() {
+        clearTimeout(timer);
+        try { ws.removeEventListener("open", onOpen); } catch {}
+        try { ws.removeEventListener("close", onClose); } catch {}
+      }
+
+      ws.addEventListener("open", onOpen);
+      ws.addEventListener("close", onClose);
+    });
+  }
+
+
 
   // choose base exactly like popup background.resolveBases logic:
   // - if usePublicUrl && manualGlobal -> manual global
@@ -232,17 +296,21 @@
   }
 
   let transientPublicUrl = null;
-
-  async function ensureTransientIfNeeded() {
+  async function ensureTransientIfNeeded(force = false) {
     const cfg = loadSettings();
     if (!cfg.usePublicUrl) return;
-    if (cfg.globalUrl && cfg.manualGlobal) return;
+    if (cfg.manualGlobal) return;
+    if (!force && transientPublicUrl) return;
 
+    await ensureWsReady(1500);
     const found = await detectTunnelTransient();
-    if (found) transientPublicUrl = found;
+    if (found) {
+      transientPublicUrl = found;
+      saveSettings({ globalUrl: found, manualGlobal: false });
+    }
   }
 
-  function chooseBase() {
+    function chooseBase() {
     const cfg = loadSettings();
     const localBase = `http://${cfg.localAddress || "127.0.0.1"}:${cfg.localPort || "8080"}`;
 
@@ -251,11 +319,13 @@
         return cfg.globalUrl.replace(/\/$/, "");
       if (transientPublicUrl)
         return transientPublicUrl;
+      if (cfg.globalUrl)
+        return cfg.globalUrl.replace(/\/$/, "");
     }
 
     return localBase;
   }
-
+ 
   // UI injection: insert buttons next to Play control (robust)
   // replace existing injectButtons() with this version
   function injectButtons() {
@@ -320,8 +390,8 @@
       await withTrackUrl(vrBtn, async (openUrl) => {
         const cfg = loadSettings();
 
-        if (cfg.usePublicUrl && !cfg.globalUrl && !transientPublicUrl) {
-          await ensureTransientIfNeeded();
+        if (cfg.usePublicUrl && !cfg.manualGlobal) {
+          await ensureTransientIfNeeded(true);
         }
 
         const base = chooseBase();
@@ -341,6 +411,11 @@
     // Clear cache button
     clearBtn.onclick = async () => {
       await withTrackUrl(clearBtn, async (openUrl) => {
+        const cfg = loadSettings();
+        if (cfg.usePublicUrl && !cfg.manualGlobal) {
+          await ensureTransientIfNeeded(true);
+        }
+
         const res = await wsRpc("clear_cache", { url: openUrl }, 4000);
         if (res && res.ok) {
           flash(clearBtn, "Cleared ✓");
@@ -494,12 +569,12 @@ function flashTemp(el, txt, ms = 900) {
   
     localAddress.onblur = () => {
       saveSettings({ localAddress: localAddress.value.trim() || "127.0.0.1" });
-      connectWS();
+      connectWS(true);
     };
   
     localPort.onblur = () => {
       saveSettings({ localPort: localPort.value.trim() || "8080" });
-      connectWS();
+      connectWS(true);
     };
   
     globalUrl.onchange = () => {

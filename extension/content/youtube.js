@@ -1,5 +1,6 @@
 (() => {
   const BTN_ATTR = "data-vrchat-btn";
+  const BTN_CLASS = "vrchat-yt-btn";
   const POPUP_ID = "vrchat-popup";
   let abortController = null;
 
@@ -11,8 +12,17 @@
     </svg>
   `;
 
-  function qsMenu() {
-    return document.querySelector("ytd-menu-renderer #top-level-buttons-computed");
+  function findMenu() {
+    if (location.pathname !== "/watch") return null;
+
+    const watch = document.querySelector("ytd-watch-flexy");
+    if (!watch) return null;
+
+    return (
+      watch.querySelector("ytd-watch-metadata #top-level-buttons-computed") ||
+      watch.querySelector("ytd-video-primary-info-renderer #top-level-buttons-computed") ||
+      watch.querySelector("#top-level-buttons-computed")
+    );
   }
 
   function closePopup() {
@@ -98,22 +108,49 @@
 
   /* ---------- inject ---------- */
 
-  function injectOnce() {
-    const menu = qsMenu();
-    if (!menu || menu.hasAttribute(BTN_ATTR)) return;
-    menu.setAttribute(BTN_ATTR, "1");
-
+  function createButton() {
     const btn = document.createElement("button");
     btn.className =
-      "yt-spec-button-shape-next yt-spec-button-shape-next--tonal yt-spec-button-shape-next--mono yt-spec-button-shape-next--size-m yt-spec-button-shape-next--icon-leading";
+      "yt-spec-button-shape-next yt-spec-button-shape-next--tonal yt-spec-button-shape-next--mono yt-spec-button-shape-next--size-m yt-spec-button-shape-next--icon-leading " +
+      BTN_CLASS;
+    btn.setAttribute(BTN_ATTR, "1");
     btn.style.marginLeft = "8px";
     btn.innerHTML = `
       <span class="yt-spec-button-shape-next__icon">${svgLink}</span>
       <span class="yt-spec-button-shape-next__button-text-content">VRChat</span>
     `;
-    btn.onclick = run;
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      run();
+    });
+    return btn;
+  }
 
-    menu.insertAdjacentElement("beforeend", btn);
+  function ensureButton() {
+    const menu = findMenu();
+    if (!menu) return;
+
+    const inMenu = menu.querySelector(`button[${BTN_ATTR}]`);
+    if (inMenu) return;
+
+    const existing = document.querySelector(`button[${BTN_ATTR}]`);
+    if (existing) {
+      menu.appendChild(existing);
+      return;
+    }
+
+    menu.insertAdjacentElement("beforeend", createButton());
+  }
+
+  let ensureScheduled = false;
+  function scheduleEnsure() {
+    if (ensureScheduled) return;
+    ensureScheduled = true;
+    requestAnimationFrame(() => {
+      ensureScheduled = false;
+      ensureButton();
+    });
   }
 
   /* ---------- styles ---------- */
@@ -191,7 +228,12 @@
 
   /* ---------- observer ---------- */
 
-  const obs = new MutationObserver(injectOnce);
+  const obs = new MutationObserver(scheduleEnsure);
   obs.observe(document, { childList: true, subtree: true });
-  injectOnce();
+
+  document.addEventListener("yt-navigate-finish", scheduleEnsure);
+  document.addEventListener("yt-page-data-updated", scheduleEnsure);
+  window.addEventListener("popstate", scheduleEnsure);
+
+  scheduleEnsure();
 })();

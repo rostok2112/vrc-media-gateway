@@ -11,6 +11,36 @@
     width: 380px;
     padding: 12px;
     margin: 0;
+    position: relative;
+    overflow: hidden;
+    color: #fff;
+  }
+  
+  /* background layer */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+  
+    background: url("icons/background.jpeg") center/cover no-repeat;
+  
+    filter: blur(2px);
+    transform: scale(1.04);
+  
+    z-index: -2;
+  }
+
+  /* dark glass overlay */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+  
+    background: rgba(0,0,0,0.45);
+  
+    backdrop-filter: blur(6px);
+  
+    z-index: -1;
   }
 
   input:not([type="checkbox"]),

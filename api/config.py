@@ -2,9 +2,16 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
 
 BASE = Path(__file__).resolve().parents[1]
+API_DIR = Path(__file__).resolve().parent
+DOTENV_PATH = API_DIR / ".env"
+
+if DOTENV_PATH.exists():
+    load_dotenv(DOTENV_PATH)
+else:
+    load_dotenv()
+
 STREAMS = BASE / "html" / "streams"
 LOGS = BASE / "logs"
 INPUT = BASE / "input"
@@ -46,4 +53,5 @@ AUDIO_TARGET = {
 TG_API_ID = int(os.getenv("TG_API_ID", "0"))
 TG_API_HASH = os.getenv("TG_API_HASH", "")
 TG_PASSWORD = os.getenv("TG_PASSWORD", "")
-TG_SESSION = os.getenv("TG_SESSION", "tg_session")
+_session = os.getenv("TG_SESSION", "tg_session")
+TG_SESSION = _session if Path(_session).is_absolute() else str(BASE / _session)

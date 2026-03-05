@@ -7,56 +7,101 @@ router = APIRouter()
 
 
 @router.get("/stream-tg-image")
-def stream_tg_image(url: str = Query(...), duration: int = Query(300), width: int = Query(1280), height: int = Query(720)):
-    if url.startswith("//"):
-        url = "https:" + url
-    if not url.lower().startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="invalid url")
+async def stream_tg_image(
+    url: str = Query(...),
+    duration: int = Query(300),
+    width: int = Query(1280),
+    height: int = Query(720),
+):
 
-    # check cache based on actual tg post URL
-    post_sid = utils.sid_for_url(url, f"{duration}{width}x{height}")
-    post_out_dir = config.STREAMS / post_sid
-    post_m3u8 = post_out_dir / "index.m3u8"
-    
-    if post_m3u8.exists():
-        return Response(status_code=200, headers={
-            "X-Accel-Redirect": f"/streams/{post_sid}/index.m3u8",
-            "Content-Type": "application/vnd.apple.mpegurl",
-        })
+    sid = utils.sid_for_url(url, f"{duration}{width}x{height}")
+    out_dir = config.STREAMS / sid
+    m3u8 = out_dir / "index.m3u8"
+
+    if m3u8.exists():
+        return Response(
+            status_code=200,
+            headers={
+                "X-Accel-Redirect": f"/streams/{sid}/index.m3u8",
+                "Content-Type": "application/vnd.apple.mpegurl",
+            },
+        )
+
+    # =========================
+    # 1️⃣ PRIMARY — TELETHON
+    # =========================
+
+    try:
+        img = await telegram_utils.download_tg_photo(url)
+
+        utils.build_hls_from_image(
+            str(img),
+            sid,
+            duration=duration,
+            width=width,
+            height=height
+        )
+
+        return Response(
+            status_code=200,
+            headers={
+                "X-Accel-Redirect": f"/streams/{sid}/index.m3u8",
+                "Content-Type": "application/vnd.apple.mpegurl",
+            },
+        )
+
+    except Exception as e:
+        print("Telethon failed, using HTML fallback:", e)
+
+
+    # =========================
+    # 2️⃣ FALLBACK — OLD METHOD
+    # =========================
 
     try:
         html, final = utils.fetch_html(url)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"fetch html failed: {e}")
+        raise HTTPException(400, f"fetch html failed: {e}")
 
     img_url = utils.extract_image_from_html(html, base_url=final)
+
     if not img_url:
-        raise HTTPException(status_code=404, detail="no image found in telegram post")
+        raise HTTPException(404, "no image found in telegram post")
 
     if img_url.startswith("//"):
         img_url = "https:" + img_url
-    if not img_url.lower().startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="invalid extracted image url")
 
-    # check cache based on actual image URL
     img_sid = utils.sid_for_url(img_url, f"{duration}{width}x{height}")
+
     img_m3u8 = config.STREAMS / img_sid / "index.m3u8"
+
     if img_m3u8.exists():
-        return Response(status_code=200, headers={
+        return Response(
+            status_code=200,
+            headers={
+                "X-Accel-Redirect": f"/streams/{img_sid}/index.m3u8",
+                "Content-Type": "application/vnd.apple.mpegurl",
+            },
+        )
+
+    try:
+        utils.build_hls_from_image(
+            img_url,
+            img_sid,
+            duration=duration,
+            width=width,
+            height=height
+        )
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+    return Response(
+        status_code=200,
+        headers={
             "X-Accel-Redirect": f"/streams/{img_sid}/index.m3u8",
             "Content-Type": "application/vnd.apple.mpegurl",
-        })
-    
-    try:
-        utils.build_hls_from_image(img_url, img_sid, duration=duration, width=width, height=height)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    return Response(status_code=200, headers={"X-Accel-Redirect": f"/streams/{img_sid}/index.m3u8", "Content-Type":"application/vnd.apple.mpegurl"})
-
-
+        },
+    )
 @router.get("/stream-tg-video")
 async def stream_tg_video(url: str = Query(...)):
     if url.startswith("//"):

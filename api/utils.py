@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+from shutil import copyfile
 import tempfile
 import time
 import re
@@ -187,7 +188,12 @@ def build_hls_from_image(
     img = out_dir / "src.jpg"
     mp4 = out_dir / "video.mp4"
 
-    download_file(image_url, img)
+    # FIX: support local files from Telethon
+    if Path(image_url).exists():
+        copyfile(image_url, img)
+    else:
+        download_file(image_url, img)
+
     image_to_mp4(img, mp4, duration, width, height)
     video_to_hls(mp4, out_dir, stream_id)
 

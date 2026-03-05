@@ -129,16 +129,35 @@
 
   function waitAndBuild(postUrl) {
     return new Promise(resolve => {
+  
       chrome.runtime.sendMessage(
         { action: 'waitAndBuild', endpoint: '/api/stream-tg-video?url=' + encodeURIComponent(postUrl) },
         r1 => {
-          if (r1?.url) return resolve(r1.url);
+  
+          // якщо відео спрацювало
+          if (r1 && r1.url) {
+            return resolve(r1.url);
+          }
+  
+          console.log('[VRChat TG] video endpoint failed, trying image');
+  
           chrome.runtime.sendMessage(
             { action: 'waitAndBuild', endpoint: '/api/stream-tg-image?url=' + encodeURIComponent(postUrl) },
-            r2 => resolve(r2?.url || null)
+            r2 => {
+  
+              if (r2 && r2.url) {
+                return resolve(r2.url);
+              }
+  
+              console.log('[VRChat TG] image endpoint also failed');
+  
+              resolve(null);
+            }
           );
+  
         }
       );
+  
     });
   }
 

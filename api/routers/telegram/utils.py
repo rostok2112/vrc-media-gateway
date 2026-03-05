@@ -2,7 +2,8 @@
 import re
 
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
+from urllib.parse import urlparse
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.custom.message import Message
@@ -16,19 +17,12 @@ _tg_client: Optional[TelegramClient] = None
 
 
 async def _create_client_from_string(session_str: str) -> TelegramClient:
-    """
-    Try to create a TelegramClient using a StringSession (session string).
-    Raises exceptions from Telethon if something goes wrong.
-    """
     client = TelegramClient(StringSession(session_str), int(config.TG_API_ID), config.TG_API_HASH)
     await client.connect()
-    # verify authorization
     try:
         authorized = await client.is_user_authorized()
     except Exception:
-        # In some Telethon versions is_user_authorized may raise; treat as not authorized
         authorized = False
-
     if not authorized:
         await client.disconnect()
         raise RuntimeError("Loaded StringSession is not authorized")
@@ -36,16 +30,12 @@ async def _create_client_from_string(session_str: str) -> TelegramClient:
 
 
 async def _create_client_from_file(session_path: Path) -> TelegramClient:
-    """
-    Fallback: treat session_path as a Telethon session filename (sqlite or .session)
-    """
     client = TelegramClient(str(session_path), int(config.TG_API_ID), config.TG_API_HASH)
     await client.connect()
     try:
         authorized = await client.is_user_authorized()
     except Exception:
         authorized = False
-
     if not authorized:
         await client.disconnect()
         raise RuntimeError("Session file is not authorized")
@@ -53,65 +43,45 @@ async def _create_client_from_file(session_path: Path) -> TelegramClient:
 
 
 async def get_tg_client() -> TelegramClient:
-    """
-    Return a connected, authorized TelegramClient reusing a global instance.
-    Will try:
-      1) If config.TG_SESSION is a path to an existing file that contains a session string -> use StringSession
-      2) If step 1 fails, try using the config.TG_SESSION value as a session filename (Telethon will create/open it)
-    Raises RuntimeError if credentials or session are misconfigured.
-    """
     global _tg_client
+
+    if _tg_client and _tg_client.is_connected():
+        return _tg_client
+
     if not (config.TG_API_ID and config.TG_API_HASH and config.TG_SESSION):
         raise RuntimeError("Telegram API credentials are not configured")
 
-    if _tg_client is not None and getattr(_tg_client, "is_connected", lambda: False)():
-        # already connected
-        return _tg_client
+    session_path = Path(config.TG_SESSION)
 
-    session_cfg = Path(config.TG_SESSION)
-    last_exc: Optional[Exception] = None
-
-    # First try: if file exists and contains a non-empty string, try as StringSession
-    if session_cfg.exists() and session_cfg.is_file():
-        try:
-            session_text = session_cfg.read_text(encoding="utf-8").strip()
-            if session_text:
-                _tg_client = await _create_client_from_string(session_text)
-                return _tg_client
-        except Exception as e:
-            last_exc = e
-            # fall through to try as session filename
-
-    # Second try: treat config.TG_SESSION as a session filename / path (Telethon session file)
-    try:
-        # If config.TG_SESSION is relative or string path, pass it directly
-        _tg_client = await _create_client_from_file(session_cfg)
-        return _tg_client
-    except Exception as e:
-        last_exc = e
-
-    # Third try: maybe config.TG_SESSION contains session string but file didn't exist (user kept the string in config)
-    try:
+    # якщо файл існує → читаємо StringSession
+    if session_path.exists():
+        session_text = session_path.read_text(encoding="utf-8").strip()
+    else:
         session_text = str(config.TG_SESSION).strip()
-        if session_text and "\n" not in session_text and len(session_text) > 50:
-            _tg_client = await _create_client_from_string(session_text)
-            return _tg_client
-    except Exception as e:
-        last_exc = e
 
-    # nothing worked
-    if last_exc:
-        raise RuntimeError(f"Failed to create Telegram client: {last_exc}") from last_exc
-    raise RuntimeError("Failed to create Telegram client for unknown reason")
+    _tg_client = TelegramClient(
+        StringSession(session_text),
+        int(config.TG_API_ID),
+        config.TG_API_HASH
+    )
 
+    await _tg_client.connect()
+
+    if not await _tg_client.is_user_authorized():
+        raise RuntimeError("Telegram session is not authorized")
+
+    return _tg_client
 
 async def download_tg_video(url: str) -> Path:
     """
     Download a video from a Telegram post URL and return the local Path to the mp4 file.
+    Supports both:
+      - https://t.me/username/<msg_id>
+      - https://t.me/c/<channel_id>/<msg_id>
     """
-    channel, msg_id = _parse_tg_post(url)
+    channel_entity, msg_id = _parse_tg_post(url)
     client = await get_tg_client()
-    msg: Message = await client.get_messages(channel, ids=msg_id)
+    msg: Message = await client.get_messages(channel_entity, ids=msg_id)
 
     if not msg or not getattr(msg, "file", None):
         raise RuntimeError("No media in Telegram post")
@@ -120,21 +90,67 @@ async def download_tg_video(url: str) -> Path:
     if not mime or not mime.startswith("video/"):
         raise RuntimeError("Media is not a video")
 
-    target = Path(config.OUTPUT) / f"{channel}_{msg_id}.mp4"
+    target = Path(config.OUTPUT) / f"{getattr(channel_entity, 'channel_id', str(channel_entity))}_{msg_id}.mp4"
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    # Telethon can download directly to the file path
     await client.download_media(msg, file=str(target))
     utils.ensure_file(target)
 
     return target
 
+async def download_tg_photo(url: str) -> Path:
 
-def _parse_tg_post(url: str) -> Tuple[str, int]:
+    channel_entity, msg_id = _parse_tg_post(url)
+
+    client = await get_tg_client()
+
+    msg = await client.get_messages(channel_entity, ids=msg_id)
+
+    if not msg or not msg.photo:
+        raise RuntimeError("No photo in telegram post")
+
+    out = Path(config.OUTPUT) / f"tg_{msg_id}.jpg"
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    await client.download_media(msg.photo, file=str(out))
+
+    return out
+
+def _parse_tg_post(url: str) -> Tuple[Union[str, PeerChannel], int]:
+    """
+    Robust parser for Telegram post URLs.
+    Returns either (username, message_id) or (PeerChannel(channel_id), message_id)
+    Accepts:
+      - https://t.me/username/8720
+      - https://t.me/c/2242455380/8720
+      - (also falls back to old regex)
+    """
+    parsed = urlparse(url)
+    path_parts = [p for p in parsed.path.split('/') if p]
+    # /c/<channel_id>/<message_id>
+    if len(path_parts) >= 3 and path_parts[0] == "c":
+        try:
+            channel_id = int(path_parts[1])
+            msg_id = int(path_parts[2])
+        except ValueError:
+            raise ValueError("Invalid numeric parts in Telegram /c/ URL")
+        return PeerChannel(channel_id), msg_id
+
+    # /<username>/<message_id>
+    if len(path_parts) >= 2:
+        try:
+            msg_id = int(path_parts[1])
+        except ValueError:
+            raise ValueError("Invalid message id in Telegram URL")
+        return path_parts[0], msg_id
+
+    # fallback to older regex (handles t.me/username/123)
     m = _TG_RE.match(url)
-    if not m:
-        raise ValueError("Invalid Telegram post URL")
-    return m.group(1), int(m.group(2))
+    if m:
+        return m.group(1), int(m.group(2))
+
+    raise ValueError("Invalid Telegram post URL")
 
 def parse_internal_channel_id(value: str) -> int:
     if "#-100" in value:
@@ -153,9 +169,7 @@ async def resolve_public_tg_link(value: str) -> Optional[str]:
     client = await get_tg_client()
 
     entity = await client.get_entity(PeerChannel(channel_id))
-
     username = getattr(entity, "username", None)
     if not username:
         return None
-
     return f"https://t.me/{username}"

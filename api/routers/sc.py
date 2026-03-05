@@ -16,7 +16,14 @@ def stream_sc(url: str = Query(...)):
     out_dir.mkdir(parents=True, exist_ok=True)
     audio_out = out_dir / "audio.m4a"
     try:
-        subprocess.run([config.YTDLP, "-f", "bestaudio", "-o", str(audio_out), url], check=True)
+        base_cmd = [config.YTDLP, "-f", "bestaudio", "-o", str(audio_out), url]
+        if config.COOKIES.exists():
+            try:
+                subprocess.run([config.YTDLP, "--cookies", str(config.COOKIES), "-f", "bestaudio", "-o", str(audio_out), url], check=True)
+            except subprocess.CalledProcessError:
+                subprocess.run(base_cmd, check=True)
+        else:
+            subprocess.run(base_cmd, check=True)
         utils.audio_to_hls(audio_out, out_dir, sid)
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=500, detail=f"yt-dlp failed: {e}")

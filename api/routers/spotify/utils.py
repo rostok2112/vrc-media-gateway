@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 import shutil
 import urllib.parse
+import winappaudiorouter as war
 from api.routers.spotify import utils  as spotify_utils
 from api.segments_engine import registry
 from api.websockets.clients_name import ClientName
@@ -87,3 +88,14 @@ async def clear_spotify_cache(url: str) -> dict:
             raise HTTPException(500, "cache remove failed")
 
     return {"ok": True, "sid": sid, "removed": removed}
+
+
+async def restore_audio_route(process_id: int | None = None, process_name: str | None = None) -> dict:
+    if not process_id and not process_name:
+        process_name = config.SPOTIFY
+
+    try:
+        result = war.clear_app_output_device(process_id=process_id, process_name=process_name)
+        return {"ok": True, "result": result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

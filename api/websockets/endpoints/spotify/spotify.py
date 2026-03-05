@@ -41,6 +41,14 @@ async def spotify_ws(ws: WebSocket):
                         result = await spotify_utils.clear_spotify_cache(params.get("url"))
                     except Exception as e:
                         result = {"ok": False, "error": str(e)}
+                elif method == "restore_audio":
+                    try:
+                        result = await spotify_utils.restore_audio_route(
+                            process_id=params.get("pid"),
+                            process_name=params.get("process_name"),
+                        )
+                    except Exception as e:
+                        result = {"ok": False, "error": str(e)}
 
                 await ws.send_text(json.dumps({
                     "type": "rpc_response",

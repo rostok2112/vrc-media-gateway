@@ -557,6 +557,15 @@ function flashTemp(el, txt, ms = 900) {
     refreshBtn.style.cursor = "pointer";
   
     root.appendChild(refreshBtn);
+
+    const restoreAudioBtn = document.createElement("button");
+    restoreAudioBtn.textContent = "Restore audio output";
+    restoreAudioBtn.style.width = "100%";
+    restoreAudioBtn.style.height = "32px";
+    restoreAudioBtn.style.cursor = "pointer";
+    restoreAudioBtn.style.marginTop = "6px";
+
+    root.appendChild(restoreAudioBtn);
   
     // --- Handlers ---
   
@@ -601,6 +610,16 @@ function flashTemp(el, txt, ms = 900) {
       } else {
         detected.textContent = "Detected: (none)";
         Spicetify.showNotification("Public URL not found");
+      }
+    };
+
+    restoreAudioBtn.onclick = async () => {
+      await ensureWsReady(1500);
+      const res = await wsRpc("restore_audio", {}, 4000);
+      if (res && res.ok) {
+        Spicetify.showNotification("Audio output restored");
+      } else {
+        Spicetify.showNotification("Audio restore failed");
       }
     };
   

@@ -1,8 +1,10 @@
+import logging
 from fastapi import APIRouter, Query, Response, HTTPException
 import hashlib, subprocess, urllib.parse as urlparse
 
 from api import config, utils
 
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -38,35 +40,45 @@ def stream_yt(url: str = Query(...)):
     video_out = out_dir / "video.mp4"
 
     try:
+        # пробуємо з cookies (як зараз)
         cmd = [
             config.YTDLP,
             "--js-runtimes", config.JS_RUNTIME,
             "--remote-components", "ejs:github",
             "--cookies", str(config.COOKIES),
-            "-f", "best",
+            # або: omit '-f', "best" — краще дати yt-dlp самому обрати
+            # "-f", "best",
             "--merge-output-format", "mp4",
             "--no-playlist",
             "-o", str(video_out),
             norm,
         ]
-
-        subprocess.run(cmd, check=True)
+        p = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=300)
+        if p.returncode != 0:
+            # лог в stderr дуже допоможе зрозуміти причину
+            logger.error("yt-dlp stderr: %s", p.stderr)
+            raise subprocess.CalledProcessError(p.returncode, cmd, output=p.stdout, stderr=p.stderr)
 
     except subprocess.CalledProcessError:
+        # fallback — пробуємо без cookies (іноді cookies файл у нестандартному форматі)
         try:
-            subprocess.run([
+            cmd2 = [
                 config.YTDLP,
                 "--js-runtimes", config.JS_RUNTIME,
                 "--remote-components", "ejs:github",
-                "-f", "best",
+                # "-f", "best",
                 "--merge-output-format", "mp4",
                 "--no-playlist",
                 "-o", str(video_out),
                 norm,
-            ], check=True)
-
+            ]
+            p2 = subprocess.run(cmd2, check=False, capture_output=True, text=True, timeout=300)
+            if p2.returncode != 0:
+                logger.error("yt-dlp fallback stderr: %s", p2.stderr)
+                raise subprocess.CalledProcessError(p2.returncode, cmd2, output=p2.stdout, stderr=p2.stderr)
         except subprocess.CalledProcessError as e:
-            raise HTTPException(status_code=500, detail=f"yt-dlp failed: {e}")
+            # повертаємо stderr в помилці, щоб не гадати
+            raise HTTPException(status_code=500, detail=f"yt-dlp failed. stderr: {e.stderr[:2000]}")
 
     try:
         utils.video_to_hls(video_out, out_dir, sid)

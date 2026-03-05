@@ -160,3 +160,17 @@ Combined:
 ### Behavior
 - On first request the server will download/convert - expect ~10-30s (depends on file size and network). The result is cached under `html/streams/<id>/` for subsequent instant access.
 - The API returns a playable URL (served by nginx). For maximum compatibility with VRChat, use `X-Accel-Redirect` or return `200 OK` with `.m3u8` body (avoid plain `302` redirects).
+
+## Troubleshooting
+
+If you met the problem like:
+
+```
+yt-dlp stderr: WARNING: [youtube] [jsc] Error solving n challenge request using "node" provider: Error running node process (returncode: 1): found 0 n function possibilities. input = NChallengeInput(player_url='https://www.youtube.com/s/player/6c5cb4f4/tv-player-ias.vflset/tv-player-ias.js', challenges=['fi8nOqCSf-p9nJrU', 'ugaQUrir4BPQ7-Tz', 'Ra1Qrj_5L25bwOKI', '9uEv1FsSzPQCdLTf', 'vYYd47c7sJn24eZ9']) Please report this issue on https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using yt-dlp -U WARNING: [youtube] uXFaqjDbNoE: n challenge solving failed: Some formats may be missing. Ensure you have a supported JavaScript runtime and challenge solver script distribution installed. Review any warnings presented before this message. For more details, refer to https://github.com/yt-dlp/yt-dlp/wiki/EJS WARNING: Only images are available for download. use --list-formats to see them ERROR: [youtube] uXFaqjDbNoE: Requested format is not available. Use --list-formats for a list of available formats yt-dlp fallback stderr: ERROR: [youtube] uXFaqjDbNoE: Sign in to confirm your age. This video may be inappropriate for some users. Use --cookies-from-browser or --cookies for the authentication. See https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp for how to manually pass cookies. Also see https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies for tips on effectively exporting YouTube cookies
+```
+
+just run:
+
+```
+./"update yt-dlp.bat"
+```

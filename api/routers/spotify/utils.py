@@ -1,19 +1,19 @@
 import asyncio
-from http.client import HTTPException
 import json
-import math
 from pathlib import Path
 import shutil
 import urllib.parse
 import winappaudiorouter as war
-from api.routers.spotify import utils  as spotify_utils
+from fastapi import HTTPException
 from api.segments_engine import registry
 from api.websockets.clients_name import ClientName
 from api.websockets.registry import ws_registry
 
 from api import config, utils
 
-SEG_TIME = int(config.SPOTIFY_HLS_OPTS.get("hls_time", 2))
+SPOTIFY_STREAM_LAYOUT_VERSION = "spotify-hls-v1"
+DEFAULT_SEGMENT_TIME = int(config.SPOTIFY_HLS_OPTS.get("hls_time", 2))
+DEFAULT_PREFETCH_SEGMENTS = int(config.SPOTIFY_HLS_OPTS.get("prefetch", 10))
 
 
 def to_spotify_uri(url: str) -> str:
@@ -54,10 +54,51 @@ async def get_duration_ms_via_ws(url: str) -> int:
     return int(resp.get("duration_ms", 0))
 
 
-def write_metadata_to_file(out_dir: Path, duration_ms: int, segment_time: int, segments_count: int, url: str):
+def resolve_stream_options(
+    segment_time: int | str | None = None,
+    prefetch: int | str | None = None,
+) -> tuple[int, int]:
+    try:
+        resolved_segment_time = int(segment_time) if segment_time not in (None, "") else DEFAULT_SEGMENT_TIME
+    except (TypeError, ValueError):
+        resolved_segment_time = DEFAULT_SEGMENT_TIME
+
+    try:
+        resolved_prefetch = int(prefetch) if prefetch not in (None, "") else DEFAULT_PREFETCH_SEGMENTS
+    except (TypeError, ValueError):
+        resolved_prefetch = DEFAULT_PREFETCH_SEGMENTS
+
+    return max(1, resolved_segment_time), max(1, resolved_prefetch)
+
+
+def spotify_stream_sid(
+    url: str,
+    segment_time: int | str | None = None,
+    prefetch: int | str | None = None,
+) -> str:
+    resolved_segment_time, resolved_prefetch = resolve_stream_options(segment_time, prefetch)
+    return utils.sid_for_url(
+        url,
+        SPOTIFY_STREAM_LAYOUT_VERSION,
+        f"segment_time={resolved_segment_time}",
+        f"prefetch={resolved_prefetch}",
+    )
+
+
+def write_metadata_to_file(
+    out_dir: Path,
+    duration_ms: int,
+    segment_time: int,
+    segments_count: int,
+    url: str,
+    prefetch: int | None = None,
+):
+    resolved_segment_time, resolved_prefetch = resolve_stream_options(segment_time, prefetch)
     meta = {
     "duration_ms": int(duration_ms),
-    "seg_time": int(spotify_utils.SEG_TIME),
+    "seg_time": resolved_segment_time,
+    "segment_time": resolved_segment_time,
+    "prefetch": resolved_prefetch,
     "total_segments": segments_count,
     "url": url,
     }
@@ -67,27 +108,36 @@ def write_metadata_to_file(out_dir: Path, duration_ms: int, segment_time: int, s
         pass
 
 
-async def clear_spotify_cache(url: str) -> dict:
+async def clear_spotify_cache(
+    url: str,
+    segment_time: int | str | None = None,
+    prefetch: int | str | None = None,
+) -> dict:
     if not url:
         raise HTTPException(400, "missing url")
 
-    sid = utils.sid_for_url(url)
-    out_dir = utils.out_dir_for_sid(sid)
+    sid = spotify_stream_sid(url, segment_time=segment_time, prefetch=prefetch)
+    sids_to_remove = {sid, utils.sid_for_url(url)}
+    removed_sids = []
 
-    try:
-        await registry.stop_stream(sid)
-    except Exception:
-        pass
+    for target_sid in sids_to_remove:
+        out_dir = utils.out_dir_for_sid(target_sid)
 
-    removed = False
-    if out_dir.exists():
+        try:
+            await registry.stop_stream(target_sid)
+        except Exception:
+            pass
+
+        if not out_dir.exists():
+            continue
+
         try:
             shutil.rmtree(out_dir)
-            removed = True
+            removed_sids.append(target_sid)
         except Exception:
             raise HTTPException(500, "cache remove failed")
 
-    return {"ok": True, "sid": sid, "removed": removed}
+    return {"ok": True, "sid": sid, "removed": bool(removed_sids), "removed_sids": removed_sids}
 
 
 async def restore_audio_route(process_id: int | None = None, process_name: str | None = None) -> dict:

@@ -314,7 +314,12 @@ def read_metadata(out_dir: Path) -> dict:
 def build_live_m3u8(out_dir: Path, now_dt: Optional[datetime] = None, window_seconds: Optional[int] = 300) -> str:
     now = now_dt or datetime.now(timezone.utc)
     meta = read_metadata(out_dir)
-    seg_time = int(meta.get("segment_time", getattr(config, "SPOTIFY_SEG_TIME", int(config.SPOTIFY_HLS_OPTS.get("hls_time", )))))
+    seg_time = int(
+        meta.get(
+            "segment_time",
+            meta.get("seg_time", getattr(config, "SPOTIFY_SEG_TIME", int(config.SPOTIFY_HLS_OPTS.get("hls_time")))),
+        )
+    )
 
     lines = ["#EXTM3U", "#EXT-X-VERSION:3", f"#EXT-X-TARGETDURATION:{seg_time}"]
 

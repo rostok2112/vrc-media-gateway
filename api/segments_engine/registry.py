@@ -42,18 +42,24 @@ async def get_or_create_writer(sid: str) -> StreamWriter:
         out_dir = Path(config.STREAMS) / sid
 
         total_segments: Optional[int] = None
+        segment_time = int(config.SPOTIFY_HLS_OPTS.get("hls_time", 3))
+        prefetch = int(config.SPOTIFY_HLS_OPTS.get("prefetch", 2))
         meta_path = out_dir / "metadata.json"
         try:
             if meta_path.exists():
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
                 if meta.get("total_segments") is not None:
                     total_segments = int(meta.get("total_segments"))
+                if meta.get("segment_time") is not None:
+                    segment_time = int(meta.get("segment_time"))
+                elif meta.get("seg_time") is not None:
+                    segment_time = int(meta.get("seg_time"))
+                if meta.get("prefetch") is not None:
+                    prefetch = int(meta.get("prefetch"))
         except Exception:
             pass
 
         adapter = SpotifyAdapter()
-
-        prefetch = int(config.SPOTIFY_HLS_OPTS.get("prefetch", 2))
 
         w = StreamWriter(
             sid=sid,
@@ -61,7 +67,7 @@ async def get_or_create_writer(sid: str) -> StreamWriter:
             ffmpeg_bin=config.FFMPEG,
             input_args=input_args,
             audio_codec_args=audio_codec_args,
-            segment_time=int(config.SPOTIFY_HLS_OPTS.get("hls_time", 3)),
+            segment_time=segment_time,
             source_adapter=adapter,
             total_segments=total_segments,
             prefetch=prefetch,

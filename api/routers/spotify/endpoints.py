@@ -19,8 +19,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.get("/stream-spotify")
-async def stream_spotify(url: str, request: Request):
-    sid = utils.sid_for_url(url)
+async def stream_spotify(
+    url: str,
+    request: Request,
+    segment_time: int | None = Query(default=None, ge=1),
+    prefetch: int | None = Query(default=None, ge=1),
+):
+    segment_time, prefetch = spotify_utils.resolve_stream_options(segment_time, prefetch)
+    sid = spotify_utils.spotify_stream_sid(url, segment_time=segment_time, prefetch=prefetch)
 
     out_dir = utils.out_dir_for_sid(sid)
     playlist = out_dir / "playlist.m3u8"
@@ -35,9 +41,14 @@ async def stream_spotify(url: str, request: Request):
         except Exception:
             raise HTTPException(400, "spotify load failed")
 
-        seg_time = int(config.SPOTIFY_HLS_OPTS.get("hls_time", 3))
-        total_segments = math.ceil(duration_ms / (seg_time * 1000))
-        meta = {"url": url, "segment_time": seg_time, "total_segments": total_segments, "start_time": None}
+        total_segments = math.ceil(duration_ms / (segment_time * 1000))
+        meta = {
+            "url": url,
+            "segment_time": segment_time,
+            "prefetch": prefetch,
+            "total_segments": total_segments,
+            "start_time": None,
+        }
         meta_path.write_text(json.dumps(meta), encoding="utf-8")
 
     # PREFETCH LOCK: read timeout from config; if <=0 then wait indefinitely
@@ -66,8 +77,12 @@ async def stream_spotify(url: str, request: Request):
 
 
 @router.post("/stream-spotify-clear")
-async def clear_spotify_cache(url: str):
-    return await spotify_utils.clear_spotify_cache(url)
+async def clear_spotify_cache(
+    url: str,
+    segment_time: int | None = Query(default=None, ge=1),
+    prefetch: int | None = Query(default=None, ge=1),
+):
+    return await spotify_utils.clear_spotify_cache(url, segment_time=segment_time, prefetch=prefetch)
 
 
 @router.get("/stream-spotify-playlist/{sid}")

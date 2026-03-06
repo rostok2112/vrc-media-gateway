@@ -17,7 +17,9 @@
       localAddress: "127.0.0.1",
       localPort: "8080",
       globalUrl: "",
-      manualGlobal: false
+      manualGlobal: false,
+      spotifyPrefetchSegments: 10,
+      spotifyPrefetchSegmentDuration: 2
     };
   }
 
@@ -42,6 +44,42 @@
       console.error("[stream_bridge] saveSettings", e);
       return null;
     }
+  }
+
+  function normalizePositiveInt(value, fallback) {
+    const parsed = Number.parseInt(String(value ?? ""), 10);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      return fallback;
+    }
+    return parsed;
+  }
+
+  function getStreamingSettings(cfg = loadSettings()) {
+    const defaults = defaultSettings();
+    const prefetch = normalizePositiveInt(
+      cfg.spotifyPrefetchSegments,
+      defaults.spotifyPrefetchSegments
+    );
+    const segmentTime = normalizePositiveInt(
+      cfg.spotifyPrefetchSegmentDuration,
+      defaults.spotifyPrefetchSegmentDuration
+    );
+
+    return {
+      prefetch,
+      segmentTime,
+      totalDuration: prefetch * segmentTime
+    };
+  }
+
+  function buildSpotifyStreamLink(base, openUrl, cfg = loadSettings()) {
+    const streaming = getStreamingSettings(cfg);
+    const params = new URLSearchParams({
+      url: openUrl,
+      segment_time: String(streaming.segmentTime),
+      prefetch: String(streaming.prefetch)
+    });
+    return `${base.replace(/\/$/, "")}/api/stream-spotify?${params.toString()}`;
   }
 
   // WS RPC helper (use existing WS connection)
@@ -396,10 +434,7 @@
         }
 
         const base = chooseBase();
-
-        const link =
-          `${base.replace(/\/$/, "")}/api/stream-spotify?url=` +
-          encodeURIComponent(openUrl);
+        const link = buildSpotifyStreamLink(base, openUrl, cfg);
 
         const ok = await copyToClipboard(link);
 
@@ -413,11 +448,20 @@
     clearBtn.onclick = async () => {
       await withTrackUrl(clearBtn, async (openUrl) => {
         const cfg = loadSettings();
+        const streaming = getStreamingSettings(cfg);
         if (cfg.usePublicUrl && !cfg.manualGlobal) {
           await ensureTransientIfNeeded(true);
         }
 
-        const res = await wsRpc("clear_cache", { url: openUrl }, 4000);
+        const res = await wsRpc(
+          "clear_cache",
+          {
+            url: openUrl,
+            segment_time: streaming.segmentTime,
+            prefetch: streaming.prefetch
+          },
+          4000
+        );
         if (res && res.ok) {
           flash(clearBtn, "Cleared ✓");
         } else {
@@ -539,6 +583,14 @@ function flashTemp(el, txt, ms = 900) {
       i.style.padding = "4px 6px";
       return i;
     }
+
+    function numberField(value, min = 1) {
+      const i = inputField(value);
+      i.type = "number";
+      i.min = String(min);
+      i.step = "1";
+      return i;
+    }
   
     // --- Use public ---
     const usePublicWrap = document.createElement("div");
@@ -601,6 +653,81 @@ function flashTemp(el, txt, ms = 900) {
     restoreAudioBtn.style.marginTop = "6px";
 
     root.appendChild(restoreAudioBtn);
+
+    const streamingSettingsBtn = document.createElement("button");
+    streamingSettingsBtn.textContent = "Streaming settings";
+    streamingSettingsBtn.style.width = "100%";
+    streamingSettingsBtn.style.height = "32px";
+    streamingSettingsBtn.style.cursor = "pointer";
+    streamingSettingsBtn.style.marginTop = "6px";
+
+    root.appendChild(streamingSettingsBtn);
+
+    const streamingCfg = getStreamingSettings(cfg);
+    const streamingSection = document.createElement("div");
+    streamingSection.style.display = "none";
+    streamingSection.style.marginTop = "10px";
+
+    streamingSection.appendChild(sectionTitle("Streaming"));
+
+    const prefetchCountLabel = document.createElement("div");
+    prefetchCountLabel.textContent = "Prefetch segments count";
+    prefetchCountLabel.style.fontSize = "12px";
+    prefetchCountLabel.style.marginBottom = "4px";
+
+    const prefetchCount = numberField(String(streamingCfg.prefetch));
+    prefetchCount.style.marginBottom = "6px";
+
+    const segmentDurationLabel = document.createElement("div");
+    segmentDurationLabel.textContent = "Prefetch segment duration (sec)";
+    segmentDurationLabel.style.fontSize = "12px";
+    segmentDurationLabel.style.marginBottom = "4px";
+
+    const segmentDuration = numberField(String(streamingCfg.segmentTime));
+    segmentDuration.style.marginBottom = "6px";
+
+    const totalDurationLabel = document.createElement("div");
+    totalDurationLabel.textContent = "Total prefetch duration";
+    totalDurationLabel.style.fontSize = "12px";
+    totalDurationLabel.style.marginBottom = "4px";
+
+    const totalPrefetchDuration = inputField("");
+    totalPrefetchDuration.disabled = true;
+    totalPrefetchDuration.style.opacity = "0.85";
+
+    streamingSection.appendChild(prefetchCountLabel);
+    streamingSection.appendChild(prefetchCount);
+    streamingSection.appendChild(segmentDurationLabel);
+    streamingSection.appendChild(segmentDuration);
+    streamingSection.appendChild(totalDurationLabel);
+    streamingSection.appendChild(totalPrefetchDuration);
+
+    root.appendChild(streamingSection);
+
+    function syncStreamingSettings(save = false) {
+      const defaults = defaultSettings();
+      const prefetch = normalizePositiveInt(
+        prefetchCount.value,
+        defaults.spotifyPrefetchSegments
+      );
+      const duration = normalizePositiveInt(
+        segmentDuration.value,
+        defaults.spotifyPrefetchSegmentDuration
+      );
+
+      prefetchCount.value = String(prefetch);
+      segmentDuration.value = String(duration);
+      totalPrefetchDuration.value = `${prefetch * duration} sec`;
+
+      if (save) {
+        saveSettings({
+          spotifyPrefetchSegments: prefetch,
+          spotifyPrefetchSegmentDuration: duration
+        });
+      }
+    }
+
+    syncStreamingSettings(false);
   
     // --- Handlers ---
   
@@ -657,6 +784,21 @@ function flashTemp(el, txt, ms = 900) {
         Spicetify.showNotification("Audio restore failed");
       }
     };
+
+    streamingSettingsBtn.onclick = () => {
+      const isHidden = streamingSection.style.display === "none";
+      streamingSection.style.display = isHidden ? "block" : "none";
+      if (isHidden) {
+        syncStreamingSettings(false);
+      }
+    };
+
+    prefetchCount.oninput = () => syncStreamingSettings(false);
+    segmentDuration.oninput = () => syncStreamingSettings(false);
+    prefetchCount.onchange = () => syncStreamingSettings(true);
+    segmentDuration.onchange = () => syncStreamingSettings(true);
+    prefetchCount.onblur = () => syncStreamingSettings(true);
+    segmentDuration.onblur = () => syncStreamingSettings(true);
   
     Spicetify.PopupModal.display({
       title: "VRChat settings",

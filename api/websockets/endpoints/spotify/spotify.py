@@ -38,7 +38,11 @@ async def spotify_ws(ws: WebSocket):
                     }
                 elif method == "clear_cache":
                     try:
-                        result = await spotify_utils.clear_spotify_cache(params.get("url"))
+                        result = await spotify_utils.clear_spotify_cache(
+                            params.get("url"),
+                            segment_time=params.get("segment_time"),
+                            prefetch=params.get("prefetch"),
+                        )
                     except Exception as e:
                         result = {"ok": False, "error": str(e)}
                 elif method == "restore_audio":

@@ -54,3 +54,18 @@ python auxillary/get_tg_session.py
 ## Spotify Note
 
 Spotify features depend on the in-memory websocket registry in this backend. Use the single-process full-stack path when you need Spotify Desktop or Spotify Web export flows.
+
+`/api/stream-spotify` accepts optional Spotify HLS tuning through query params:
+
+- `segment_time=<seconds>`
+- `prefetch=<count>`
+
+Example:
+
+```text
+/api/stream-spotify?url=https://open.spotify.com/track/...&segment_time=2&prefetch=10
+```
+
+If those params are missing, the backend uses the defaults from `SPOTIFY_HLS_OPTS` in [`config.py`](./config.py).
+
+The Spicetify bridge stores those values in its `Streaming settings` section and sends them through the `VRChat` button and the Spotify cache-clear flow so different Spotify streaming presets do not share the same cache folder.

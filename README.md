@@ -16,6 +16,7 @@ VRChat Media Gateway is a Windows-first toolkit for turning web media into VRCha
   - `VRChat` button
   - `Clear cache` button
   - `Settings` button
+  - `Streaming settings` section for Spotify HLS prefetch tuning
   - `Restore audio output` action
 - FastAPI backend in [`api/`](./api)
 - Websocket RPC endpoint for Spotify control at `/api/ws/spotify`
@@ -199,6 +200,20 @@ The Spotify Desktop path works like this:
 4. `ffmpeg` captures from the cable and writes HLS segments.
 5. When the track ends, the playlist is finalized and converted into a replayable VOD-style result.
 
+Spicetify settings now also include a `Streaming settings` button. That section stores:
+
+- prefetch segments count
+- prefetch segment duration in seconds
+- a read-only total prefetch duration field
+
+The `VRChat` button appends those values to Spotify links as:
+
+```text
+/api/stream-spotify?url=<spotify-track-url>&segment_time=<seconds>&prefetch=<count>
+```
+
+If either query parameter is omitted, the backend falls back to the defaults from [`api/config.py`](./api/config.py) `SPOTIFY_HLS_OPTS`.
+
 ## Running The Stack
 
 Recommended full-stack command:
@@ -249,8 +264,8 @@ Main HTTP endpoints:
 - `GET /api/stream-tg-media?url=<telegram-post-url>`
 - `GET /api/stream-tg-image?url=<telegram-post-url>`
 - `GET /api/stream-tg-video?url=<telegram-post-url>`
-- `GET /api/stream-spotify?url=<spotify-track-url>`
-- `POST /api/stream-spotify-clear?url=<spotify-track-url>`
+- `GET /api/stream-spotify?url=<spotify-track-url>&segment_time=<seconds>&prefetch=<count>`
+- `POST /api/stream-spotify-clear?url=<spotify-track-url>&segment_time=<seconds>&prefetch=<count>`
 - `GET /api/tunnel`
 
 Spotify-specific delivery endpoints:

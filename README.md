@@ -1,176 +1,359 @@
-# VRChat Media Gateway: Local/Internet Media → HLS Proxy
+# VRChat Media Gateway
 
-**Short:** turn local media, SoundCloud tracks or YouTube videos into stable HLS streams that are playable in VRChat and other strict HLS players. Exposes a public HTTPS URL via Cloudflare Tunnel.
+VRChat Media Gateway is a Windows-first toolkit for turning web media into VRChat-friendly HLS streams. The current project is no longer just a small YouTube/SoundCloud proxy: it now includes a browser extension, a Spicetify bridge for Spotify Desktop, a FastAPI backend, websocket RPC for Spotify control, and a segment engine that can stream live audio into HLS playlists.
 
----
+This README reflects the current `main` branch after the changes made since commit `f478dc747b8da529736948ef9800c65fe535b8b9`.
 
-## What this project does
-- Converts media files to HLS (`.m3u8 + .ts`) using **ffmpeg**.
-- Downloads SoundCloud tracks via **yt-dlp** and converts them to HLS.
-- Downloads YouTube videos via **yt-dlp** and converts them to HLS.
-- Serves HLS streams with **nginx**.
-- Exposes nginx through **Cloudflare Tunnel** to get a free public HTTPS domain.
-- Provides **FastAPI** endpoints to automate: download → convert → serve → cached HLS URL.
+## What It Includes
 
-**Result:** you call a single API URL you get a playable HLS stream that works in VRChat.
+- Browser extension in [`extension/`](./extension) with:
+  - YouTube watch-page button
+  - SoundCloud track-page button
+  - Telegram Web context-menu export for images and videos
+  - Spotify Web player buttons
+  - Generic image context-menu export on any site
+  - Settings popup with local/public endpoint handling
+- Spotify Desktop bridge in [`spotify_extension/`](./spotify_extension) for Spicetify:
+  - `VRChat` button
+  - `Clear cache` button
+  - `Settings` button
+  - `Restore audio output` action
+- FastAPI backend in [`api/`](./api)
+- Websocket RPC endpoint for Spotify control at `/api/ws/spotify`
+- HLS segment engine for live Spotify capture in [`api/segments_engine/`](./api/segments_engine)
+- nginx reverse proxy and static HLS serving through [`main.conf`](./main.conf)
+- Optional Cloudflare Tunnel exposure for a public HTTPS URL
 
----
+## Main Workflows
 
-## Quick demo flow
-1. Call:
-```
-https://<your-domain>.trycloudflare.com/api/stream-sc?url=<soundcloud-link>
-```
-2. Server downloads track, converts to HLS, places files in `html/streams/<id>/`.
-3. nginx serves `/streams/<id>/index.m3u8` publicly.
-4. Insert the API URL (the one from step 1) into Popcorn Palace or VRChat - the stream will play (after conversion finishes on first request).
+| Source | How it works now |
+| --- | --- |
+| YouTube | Browser button or direct API call downloads via `yt-dlp`, uses Node-based JS challenge solving, then converts to HLS |
+| SoundCloud | Browser button appears only on track pages, preserves secret/private links when possible, downloads with `yt-dlp`, then converts to HLS |
+| Telegram images | Telegram Web context menu resolves the post, backend downloads via Telethon first, then falls back to HTML image parsing if needed |
+| Telegram videos | Telegram Web context menu or direct API call downloads media through Telethon, then converts to HLS |
+| Generic images | Right-click any image on most sites and export it to a static HLS video |
+| Spotify Web | Injected buttons in `open.spotify.com` generate `/api/stream-spotify` links and allow cache clearing |
+| Spotify Desktop | Spicetify bridge talks to the backend over websocket, routes Spotify audio into a virtual cable, and writes live HLS segments |
+| Local files | Legacy/manual flow through [`run convertion.bat`](./run%20convertion.bat) using files from `input/` |
 
----
+## What Changed From The Old README
+
+The current scope now includes:
+
+- Telegram media support through Telethon, including image fallback logic
+- Browser-side Spotify support in the Chrome/Edge extension
+- Spotify Desktop support through a Spicetify extension
+- Websocket RPC between the backend and the Spotify bridge
+- A live segment engine for Spotify instead of simple one-shot VOD conversion
+- Automatic routing of Spotify audio into a capture sink and restoration afterward
+- Conversion of finished Spotify tracks into replayable VOD playlists
+- Generic image export from browser context menus
+- Better SoundCloud handling for private/secret links
+- Tunnel auto-detection in both the browser popup and the Spicetify settings UI
+
+## Platform Notes
+
+- The full project is designed around Windows.
+- The documented scripts are `.bat` files.
+- Spotify capture uses `winappaudiorouter`, `Spotify.exe`, and DirectShow audio capture.
+- The Spotify path expects VB-Audio Virtual Cable device names by default.
+- YouTube, SoundCloud, image, and Telegram conversion logic is less OS-specific, but the repo setup and helper scripts still assume Windows.
 
 ## Requirements
-- ffmpeg (in PATH)
-- yt-dlp (in PATH)
-- nginx (in PATH)
-- cloudflared (in PATH)
-- Node.js (in PATH)
+
+Install these tools and make sure they are available in `PATH`:
+
 - Python 3.10+
-- Python packages: `fastapi`, `uvicorn`
+- `ffmpeg`
+- `yt-dlp`
+- `node`
+- `nginx`
+- `cloudflared` if you want public HTTPS URLs
 
-Install Python deps:
-```bash
-pip install fastapi uvicorn[standard] requests telethon dotenv qrcode[pil] psutil winappaudiorouter
+Optional but required for specific features:
+
+- Telegram API credentials and a logged-in Telegram session for Telegram media
+- Spotify Desktop
+- Spicetify CLI
+- VB-Audio Virtual Cable
+
+Install Python dependencies:
+
+```powershell
+pip install fastapi "uvicorn[standard]" requests python-dotenv telethon "qrcode[pil]" psutil winappaudiorouter
 ```
 
-Node.js check:
+## Architecture
 
-```
-node -v
-where node
-```
+The normal runtime shape is:
 
-If node is not found:
+1. Browser extension or Spicetify bridge triggers an `/api/...` endpoint.
+2. nginx listens on `http://127.0.0.1:8080`, proxies `/api/*` and `/api/ws/*` to FastAPI on `127.0.0.1:5000`, and serves `html/streams/`.
+3. FastAPI downloads or captures media and writes HLS output into `html/streams/<sid>/`.
+4. VRChat receives the public HTTPS API URL from Cloudflare Tunnel, or a local URL for testing.
 
-```
-setx PATH "%PATH%;C:\Program Files\nodejs\"
-```
+Important port split:
 
-Restart terminal after that.
+- FastAPI listens on `127.0.0.1:5000`
+- nginx listens on `127.0.0.1:8080`
+- The browser extension and Spotify websocket bridge should point at `8080`, not `5000`
 
----
+## Setup
 
-## Security / cookies note
-- To download age-restricted or account-only YouTube videos you may need `cookies.txt`. Export cookies locally (e.g. browser extension) and save as `cookies.txt` in the repo root. **Never commit this file.**
-- This project is intended for **personal use**. Respect platform ToS and copyright.
+### 1. Configure nginx
 
----
+[`main.conf`](./main.conf) already contains the expected layout:
 
-## Usage and prepare and run
-1. Put `ffmpeg`, `yt-dlp`, `cloudflared` and `Node.js` in your PATH.
-2. Configure nginx (`main.conf`) - example config is provided in repo.
-3. Create Cloudflare Tunnel and note the public domain.
-4. Start services (example `run_stream_server.bat`):
-5. Test locally:
+- `/api/` -> FastAPI
+- `/api/ws/` -> websocket proxy for Spotify RPC
+- `/streams/` -> public HLS output from `html/streams/`
 
-```
-http://127.0.0.1:8080/   # nginx root
-http://127.0.0.1:5000/api/stream-file?name=your.mp4  # FastAPI local test
+Start nginx with:
+
+```powershell
+.\run server.bat
 ```
 
-Telegram preparation:
-- Copy `api/.env.sample` → `api/.env`
-- In `api/.env` replace ONLY:
+### 2. Configure the backend
 
-```
-TG_API_ID=your_api_id
-TG_API_HASH=your_api_hash
+FastAPI is in [`api/`](./api). For most features there is no required backend config besides installed binaries.
+
+For Telegram support:
+
+1. Copy [`api/.env.sample`](./api/.env.sample) to `api/.env`
+2. Fill in:
+
+```env
+TG_API_ID=...
+TG_API_HASH=...
+TG_PASSWORD=
+TG_SESSION=tg_session.session
 ```
 
-Optional (if you use 2FA):
+3. Generate a Telegram session:
 
-```
-TG_PASSWORD=your_password
-```
-
-Generate Telegram session (QR):
-
-```
+```powershell
 python auxillary/get_tg_session.py
 ```
 
-Scan QR in Telegram mobile:
-Settings → Devices → Scan QR
+The QR login helper writes the session to the path from `TG_SESSION`. By default that ends up in the repository root as `tg_session.session`.
 
-After success file appears:
+If Telegram login is acting up, inspect the session with:
 
-```
-api/tg_session.session
-```
-
-YouTube note:
-
-- yt-dlp now requires JS challenge solving. Run yt-dlp with Node enabled:
-
-```
-yt-dlp --js-runtimes node --remote-components ejs:github ...
+```powershell
+python auxillary/telethon_check.py
 ```
 
-## Run
+### 3. Prepare YouTube and protected downloads
 
----
+`yt-dlp` is invoked with Node-based JS challenge solving. Keep both `yt-dlp` and Node available in `PATH`.
 
-Convert file to HLS from `./input` and place corresponding `.html/index.m3u8` file for streaming by nginx:
+If you need age-restricted or authenticated downloads:
 
-```
-./"run convertion.bat"
-```
+- export cookies to `cookies.txt` in the repository root
+- do not commit that file
 
-nginx:
+If YouTube starts failing because of extractor changes, update `yt-dlp` with:
 
-```
-./"run server.bat"
-```
-
-cloudflared:
-
-```
-./"run tunnel.bat"
+```powershell
+.\update yt-dlp.bat
 ```
 
-Streaming API:
+### 4. Load the browser extension
 
+Load [`extension/`](./extension) as an unpacked Chromium extension.
+
+The popup supports:
+
+- `Use public URL (tunnel)`
+- `Use local API for processing`
+- local host and port
+- public tunnel URL auto-detection or manual override
+
+`Use local API for processing` means:
+
+- requests are sent to the local stack on `127.0.0.1:8080`
+- the copied result still uses the public Cloudflare Tunnel URL
+
+That mode is useful when the tunnel is public but you want all downloading and transcoding to happen locally.
+
+### 5. Prepare Spotify Desktop streaming
+
+Spotify Desktop streaming is separate from Spotify Web link generation.
+
+Required pieces:
+
+- Spotify Desktop installed
+- Spicetify CLI installed and working
+- VB-Audio Virtual Cable installed
+
+The defaults in [`api/config.py`](./api/config.py) expect these device names:
+
+- `CABLE Input (VB-Audio Virtual Cable)`
+- `CABLE Output (VB-Audio Virtual Cable)`
+
+If your device names differ, change them in [`api/config.py`](./api/config.py).
+
+Install the Spicetify bridge:
+
+```powershell
+.\install_stream_bridge.bat
 ```
-./"run api.bat"
+
+After installation, start Spotify. The bridge will connect to:
+
+```text
+ws://127.0.0.1:8080/api/ws/spotify
 ```
 
-Combined:
+The Spotify Desktop path works like this:
 
+1. Backend asks the Spicetify bridge to load track metadata.
+2. Bridge controls Spotify playback over websocket RPC.
+3. Backend routes Spotify output to the configured virtual cable.
+4. `ffmpeg` captures from the cable and writes HLS segments.
+5. When the track ends, the playlist is finalized and converted into a replayable VOD-style result.
+
+## Running The Stack
+
+Recommended full-stack command:
+
+```powershell
+.\run stream server.bat
 ```
-./"run streamer server.bat"
+
+That starts:
+
+- nginx on `:8080`
+- FastAPI on `:5000`
+- a quick Cloudflare Tunnel with logs written to `logs/cloudflared.log`
+
+You can also start parts separately:
+
+```powershell
+.\run server.bat
+.\run api.bat
+.\run tunnel.bat
 ```
 
----
+Notes:
 
-## API endpoints (examples)
-- `GET /api/stream-sc?url=<url>` - download SoundCloud track, convert to HLS
-- `GET /api/stream-yt?url=<url>` - download YouTube, convert to HLS
-- `GET /api/stream-tg-image?url=<url>` - download an image from Telegram, creating static video and convert to HLS
-- `GET /api/stream-tg-video?name=<url>` - download an video from Telegram, convert to HLS
-- `GET /api/stream-stream_image?url=<url>` -  download an image, creating static video and convert to HLS
+- For the complete feature set, prefer [`run stream server.bat`](./run%20stream%20server.bat).
+- The Spotify websocket registry is in-memory, so single-process operation is the safe path for Spotify features.
+- [`run api.bat`](./run%20api.bat) is mainly useful for direct HTTP testing and non-Spotify flows.
 
-### Behavior
-- On first request the server will download/convert - expect ~10-30s (depends on file size and network). The result is cached under `html/streams/<id>/` for subsequent instant access.
-- The API returns a playable URL (served by nginx). For maximum compatibility with VRChat, use `X-Accel-Redirect` or return `200 OK` with `.m3u8` body (avoid plain `302` redirects).
+## Browser Extension Behavior
+
+Site-specific behavior on the current branch:
+
+- YouTube: injects a `VRChat` button only on watch pages and survives SPA navigation
+- SoundCloud: injects only on real track pages, not artist/profile tabs
+- Telegram Web: adds a `VRChat` entry to the message context menu and tries video first, then image
+- Spotify Web: adds `VRChat` and `Clear cache` buttons near the player controls
+- Generic images: adds a `VRChat` item to the browser image context menu
+
+The popup can also be used as a manual "paste URL -> get export link" tool.
+
+## API Overview
+
+Main HTTP endpoints:
+
+- `GET /api/stream-yt?url=<youtube-url>`
+- `GET /api/stream-sc?url=<soundcloud-url>`
+- `GET /api/stream-image?url=<image-url>&duration=300&width=1280&height=720`
+- `GET /api/stream-tg-image?url=<telegram-post-url>`
+- `GET /api/stream-tg-video?url=<telegram-post-url>`
+- `GET /api/stream-spotify?url=<spotify-track-url>`
+- `POST /api/stream-spotify-clear?url=<spotify-track-url>`
+- `GET /api/tunnel`
+
+Spotify-specific delivery endpoints:
+
+- `GET /api/stream-spotify-playlist/{sid}`
+- `GET /api/stream-spotify-segment/{sid}/{filename}`
+- `WS /api/ws/spotify`
+
+Behavior notes:
+
+- Most VOD endpoints build the stream on first request and then serve cached HLS from `html/streams/<sid>/`
+- Spotify is segment-driven and uses the websocket bridge for metadata, seeking, playback start, cache clearing, and audio restoration
+- The API endpoints are the stable links you usually want to copy into VRChat, not the raw `/streams/.../index.m3u8` file path
+
+## Legacy Local File Mode
+
+[`run convertion.bat`](./run%20convertion.bat) still works for manual local testing:
+
+- place files in `input/`
+- converted output is written to `output/`
+- the latest stream is copied into `html/` for nginx to serve
+
+This path is now the legacy/manual mode. The browser and API-driven flows are the main path.
+
+## Useful Scripts
+
+- [`run stream server.bat`](./run%20stream%20server.bat): nginx + API + Cloudflare Tunnel
+- [`run server.bat`](./run%20server.bat): nginx only
+- [`run api.bat`](./run%20api.bat): FastAPI only
+- [`run tunnel.bat`](./run%20tunnel.bat): Cloudflare Tunnel only
+- [`run convertion.bat`](./run%20convertion.bat): local file to HLS conversion
+- [`install_stream_bridge.bat`](./install_stream_bridge.bat): install Spicetify bridge
+- [`clear_cache.bat`](./clear_cache.bat): wipe cached output and generated streams
+- [`update yt-dlp.bat`](./update%20yt-dlp.bat): update `yt-dlp`
+- [`get telegram session.bat`](./get%20telegram%20session.bat): launch Telegram QR login helper
 
 ## Troubleshooting
 
-If you met the problem like:
+### Tunnel auto-detection does not work
 
-```
-yt-dlp stderr: WARNING: [youtube] [jsc] Error solving n challenge request using "node" provider: Error running node process (returncode: 1): found 0 n function possibilities. input = NChallengeInput(player_url='https://www.youtube.com/s/player/6c5cb4f4/tv-player-ias.vflset/tv-player-ias.js', challenges=['fi8nOqCSf-p9nJrU', 'ugaQUrir4BPQ7-Tz', 'Ra1Qrj_5L25bwOKI', '9uEv1FsSzPQCdLTf', 'vYYd47c7sJn24eZ9']) Please report this issue on https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using yt-dlp -U WARNING: [youtube] uXFaqjDbNoE: n challenge solving failed: Some formats may be missing. Ensure you have a supported JavaScript runtime and challenge solver script distribution installed. Review any warnings presented before this message. For more details, refer to https://github.com/yt-dlp/yt-dlp/wiki/EJS WARNING: Only images are available for download. use --list-formats to see them ERROR: [youtube] uXFaqjDbNoE: Requested format is not available. Use --list-formats for a list of available formats yt-dlp fallback stderr: ERROR: [youtube] uXFaqjDbNoE: Sign in to confirm your age. This video may be inappropriate for some users. Use --cookies-from-browser or --cookies for the authentication. See https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp for how to manually pass cookies. Also see https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies for tips on effectively exporting YouTube cookies
+- Make sure `cloudflared` is running
+- Make sure `logs/cloudflared.log` is being written
+- The browser extension and Spicetify bridge read the latest `https://*.trycloudflare.com` URL from that log through `/api/tunnel`
+- If needed, set the public URL manually in the popup/settings UI
+
+### YouTube downloads fail
+
+- Confirm `node` is installed and available in `PATH`
+- Update `yt-dlp` with [`update yt-dlp.bat`](./update%20yt-dlp.bat)
+- Add `cookies.txt` for age-restricted or logged-in content
+
+### Telegram export fails
+
+- Verify `api/.env`
+- Regenerate the Telegram session
+- Test the session with `python auxillary/telethon_check.py`
+- The image endpoint uses Telethon first and HTML parsing second; if both fail, the post is likely inaccessible from the current session
+
+### Spotify Desktop export does not start
+
+- Start nginx before opening Spotify so websocket proxying exists on port `8080`
+- Confirm the Spicetify bridge was installed with [`install_stream_bridge.bat`](./install_stream_bridge.bat)
+- Confirm VB-Cable device names match [`api/config.py`](./api/config.py)
+- If Spotify audio stays routed incorrectly after a failure, use the `Restore audio output` button in the Spicetify settings modal
+
+### SoundCloud private tracks fail
+
+- Use the extension on the actual track page
+- The new SoundCloud logic tries to capture the secret/private share URL instead of only the public permalink
+- Keep `cookies.txt` available if the backend needs authenticated access
+
+### Cache cleanup
+
+- Use the Spotify `Clear cache` button for per-track resets
+- Use [`clear_cache.bat`](./clear_cache.bat) to wipe generated media under `output/` and `html/streams/`
+
+## Project Layout
+
+```text
+api/                 FastAPI app, routers, websocket RPC, segment engine
+extension/           Browser extension for YouTube, SoundCloud, Telegram, Spotify Web, images
+spotify_extension/   Spicetify bridge for Spotify Desktop
+html/streams/        Generated HLS output served by nginx
+input/               Manual local-file input for legacy conversion mode
+output/              Temporary downloaded media and conversion artifacts
+logs/                cloudflared log and runtime logs
 ```
 
-just run:
+## License
 
-```
-./"update yt-dlp.bat"
-```
+[MIT](./LICENSE)

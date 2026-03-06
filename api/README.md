@@ -1,94 +1,55 @@
-\# VRChat Media Gateway: Local/Internet Media → HLS Proxy
+# API Notes
 
+This folder contains the FastAPI backend for VRChat Media Gateway.
 
+The backend is responsible for:
 
-\*\*Short:\*\* turn local media, SoundCloud tracks or YouTube videos into stable HLS streams that are playable in VRChat and other strict HLS players. Exposes a public HTTPS URL via Cloudflare Tunnel.
+- media download and conversion for YouTube, SoundCloud, Telegram, and images
+- websocket RPC for Spotify Desktop control
+- live HLS segment generation for Spotify
+- tunnel URL discovery from `logs/cloudflared.log`
 
+## Runtime Model
 
+- FastAPI listens on `127.0.0.1:5000`
+- nginx on `127.0.0.1:8080` proxies `/api/*` and `/api/ws/*` to FastAPI
+- generated HLS output is written to `../html/streams/`
 
----
+For full-stack usage, start the project from the repository root with:
 
-
-
-\## What this project does
-
-\- Converts media files to HLS (`.m3u8 + .ts`) using \*\*ffmpeg\*\*.
-
-\- Downloads SoundCloud tracks via \*\*yt-dlp\*\* and converts them to HLS.
-
-\- Downloads YouTube videos (optionally using `cookies.txt`) via \*\*yt-dlp\*\* and converts to HLS.
-
-\- Serves HLS streams with \*\*nginx\*\*.
-
-\- Exposes nginx through \*\*Cloudflare Tunnel\*\* to get a free public HTTPS domain.
-
-\- Provides \*\*FastAPI\*\* endpoints to automate: download → convert → serve → cached HLS URL.
-
-
-
-\*\*Result:\*\* you call a single API URL you get a playable HLS stream that works in VRChat.
-
-
-
----
-
-
-
-\## Quick demo flow
-
-1\. Call:
-
+```powershell
+.\run stream server.bat
 ```
 
-https://<your-domain>.trycloudflare.com/api/stream-sc?url=<soundcloud-link>
+## Main Endpoint Groups
 
+- `/api/stream-yt`
+- `/api/stream-sc`
+- `/api/stream-image`
+- `/api/stream-tg-image`
+- `/api/stream-tg-video`
+- `/api/stream-spotify`
+- `/api/stream-spotify-clear`
+- `/api/tunnel`
+- `/api/ws/spotify`
+
+## Telegram Config
+
+The backend loads `api/.env` first and falls back to the root environment if that file is missing.
+
+See [`api/.env.sample`](./.env.sample) for the Telegram variables:
+
+- `TG_API_ID`
+- `TG_API_HASH`
+- `TG_PASSWORD`
+- `TG_SESSION`
+
+Generate a session from the repository root with:
+
+```powershell
+python auxillary/get_tg_session.py
 ```
 
-2\. Server downloads track, converts to HLS, places files in `html/streams/<id>/`.
+## Spotify Note
 
-3\. nginx serves `/streams/<id>/index.m3u8` publicly.
-
-4\. Insert the API URL (the one from step 1) into Popcorn Palace or VRChat - the stream will play (after conversion finishes on first request).
-
-
-
----
-
-
-
-\## Requirements
-
-\- ffmpeg (in PATH)
-
-\- yt-dlp (in PATH)
-
-\- nginx (in PATH)
-
-\- cloudflared (in PATH)
-
-\- Python 3.10+
-
-\- Python packages: `fastapi`, `uvicorn`
-
-
-
-Install Python deps:
-
-```bash
-
-pip install fastapi uvicorn requests telethon dotenv qrcode\[pil] pycaw
-
-```
-
-
-
----
-
-
-
-\## Security / cookies note
-
-\- To download age-restricted or account-only YouTube videos you may need `cookies.txt`. Export cookies locally (e.g. browser extension) and save as `cookies.txt` in the repo root. \*\*Never commit this file.\*\*
-
-\- This project is intended for \*\*personal use\*\*. Respect platform ToS and copyright.
-
+Spotify features depend on the in-memory websocket registry in this backend. Use the single-process full-stack path when you need Spotify Desktop or Spotify Web export flows.

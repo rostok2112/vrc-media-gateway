@@ -1,8 +1,7 @@
 # VRChat Media Gateway
 
-VRChat Media Gateway is a Windows-first toolkit for turning web media into VRChat-friendly HLS streams. The current project is no longer just a small YouTube/SoundCloud proxy: it now includes a browser extension, a Spicetify bridge for Spotify Desktop, a FastAPI backend, websocket RPC for Spotify control, and a segment engine that can stream live audio into HLS playlists.
+VRChat Media Gateway is a Windows-first toolkit for turning web media into VRChat-friendly HLS streams. The current project is  YouTube/SoundCloud/Spotify/Telegram/General media proxy: it now includes a browser extension, a Spicetify bridge for Spotify Desktop, a FastAPI backend, websocket RPC for Spotify control, and a segment engine that can stream live audio into HLS playlists.
 
-This README reflects the current `main` branch after the changes made since commit `f478dc747b8da529736948ef9800c65fe535b8b9`.
 
 ## What It Includes
 
@@ -36,21 +35,6 @@ This README reflects the current `main` branch after the changes made since comm
 | Spotify Web | Injected buttons in `open.spotify.com` generate `/api/stream-spotify` links and allow cache clearing |
 | Spotify Desktop | Spicetify bridge talks to the backend over websocket, routes Spotify audio into a virtual cable, and writes live HLS segments |
 | Local files | Legacy/manual flow through [`run convertion.bat`](./run%20convertion.bat) using files from `input/` |
-
-## What Changed From The Old README
-
-The current scope now includes:
-
-- Telegram media support through Telethon, including image fallback logic
-- Browser-side Spotify support in the Chrome/Edge extension
-- Spotify Desktop support through a Spicetify extension
-- Websocket RPC between the backend and the Spotify bridge
-- A live segment engine for Spotify instead of simple one-shot VOD conversion
-- Automatic routing of Spotify audio into a capture sink and restoration afterward
-- Conversion of finished Spotify tracks into replayable VOD playlists
-- Generic image export from browser context menus
-- Better SoundCloud handling for private/secret links
-- Tunnel auto-detection in both the browser popup and the Spicetify settings UI
 
 ## Platform Notes
 

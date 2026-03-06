@@ -160,14 +160,14 @@ document.addEventListener("DOMContentLoaded", () => {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  async function waitForTelegramReady(endpoint) {
+  async function waitForManagedReady(endpoint) {
     const start = await chrome.runtime.sendMessage({
-      action: "startTelegramBuild",
+      action: "startManagedBuild",
       endpoint
     });
 
     if (!start || start.error) {
-      throw new Error(start?.error || "Failed to start Telegram build");
+      throw new Error(start?.error || "Failed to start build");
     }
 
     if (start.url) {
@@ -183,12 +183,13 @@ document.addEventListener("DOMContentLoaded", () => {
       await sleep(TELEGRAM_BUILD_POLL_MS);
 
       const statusResult = await chrome.runtime.sendMessage({
-        action: "pollTelegramBuild",
+        action: "pollManagedBuild",
+        endpoint,
         jobId: start.jobId
       });
 
       if (!statusResult || statusResult.error) {
-        throw new Error(statusResult?.error || "Telegram build failed");
+        throw new Error(statusResult?.error || "Build failed");
       }
 
       if (statusResult.url) {
@@ -196,7 +197,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
-    throw new Error("Timed out waiting for Telegram stream to be ready");
+    throw new Error("Timed out waiting for the stream to be ready");
   }
 
   getBtn.addEventListener("click", async () => {
@@ -211,7 +212,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (/^https?:\/\/t\.me\//.test(src)) {
         status.textContent = "Preparing Telegram stream. Large videos can take a few minutes...";
         const endpoint = "/api/stream-tg-media?url=" + encodeURIComponent(src);
-        const readyUrl = await waitForTelegramReady(endpoint);
+        const readyUrl = await waitForManagedReady(endpoint);
 
         output.value = readyUrl;
         await navigator.clipboard.writeText(readyUrl);
@@ -243,13 +244,10 @@ document.addEventListener("DOMContentLoaded", () => {
         endpoint = "/api/stream-image?url=" + encodeURIComponent(src);
       }
 
-      const r = await chrome.runtime.sendMessage({ action: "waitAndBuild", endpoint });
-      if (!r || !r.url) {
-        throw new Error(r?.error || "Failed");
-      }
+      const readyUrl = await waitForManagedReady(endpoint);
 
-      output.value = r.url;
-      await navigator.clipboard.writeText(r.url);
+      output.value = readyUrl;
+      await navigator.clipboard.writeText(readyUrl);
       status.textContent = "Ready & copied";
       await savePopupState();
     } catch (e) {

@@ -63,6 +63,35 @@ function isTelegramMediaEndpoint(endpoint) {
     /^\/api\/stream-tg-(media|video|image)\?/.test(endpoint);
 }
 
+function getManagedBuildConfig(endpoint) {
+  if (typeof endpoint !== "string") return null;
+  if (/^\/api\/stream-tg-(media|video|image)\?/.test(endpoint)) {
+    return {
+      startPath: "/api/stream-tg-build-start",
+      statusPath: "/api/stream-tg-build-status"
+    };
+  }
+  if (endpoint.startsWith("/api/stream-yt?")) {
+    return {
+      startPath: "/api/stream-yt-build-start",
+      statusPath: "/api/stream-yt-build-status"
+    };
+  }
+  if (endpoint.startsWith("/api/stream-sc?")) {
+    return {
+      startPath: "/api/stream-sc-build-start",
+      statusPath: "/api/stream-sc-build-status"
+    };
+  }
+  if (endpoint.startsWith("/api/stream-image?")) {
+    return {
+      startPath: "/api/stream-image-build-start",
+      statusPath: "/api/stream-image-build-status"
+    };
+  }
+  return null;
+}
+
 function isAbortError(err) {
   return !!err && (err.name === "AbortError" || /abort/i.test(err.message || ""));
 }
@@ -109,7 +138,7 @@ async function canUseLocalBuildBase(localBase) {
   }
 }
 
-async function resolveTelegramBuildBases() {
+async function resolveManagedBuildBases() {
   const { fetchBase: resolvedFetchBase, resultBase, localBase } = await resolveBases();
   let processBase = resolvedFetchBase;
 
@@ -126,18 +155,18 @@ async function resolveTelegramBuildBases() {
   return { processBase, finalBase };
 }
 
-async function startTelegramBuild(endpoint) {
-  const { processBase, finalBase } = await resolveTelegramBuildBases();
+async function startBuildWithConfig(endpoint, startPath) {
+  const { processBase, finalBase } = await resolveManagedBuildBases();
 
   const query = endpointQuery(endpoint);
-  const startUrl = `${processBase}/api/stream-tg-build-start${query}`;
-  console.log("[bg] startTelegramBuild:", startUrl);
+  const startUrl = `${processBase}${startPath}${query}`;
+  console.log("[bg] startBuildWithConfig:", startUrl);
 
   const startRes = await fetchWithGrace(startUrl, 15000);
   if (!startRes.ok) throw new Error("HTTP " + startRes.status);
 
   const status = await startRes.json();
-  console.log("[bg] startTelegramBuild ->", status);
+  console.log("[bg] startBuildWithConfig ->", status);
 
   if (status.error) throw new Error(status.error);
   if (status.ready && status.result_sid) {
@@ -154,10 +183,10 @@ async function startTelegramBuild(endpoint) {
   };
 }
 
-async function pollTelegramBuild(jobId) {
-  const { processBase, finalBase } = await resolveTelegramBuildBases();
-  const pollUrl = `${processBase}/api/stream-tg-build-status?job_id=${encodeURIComponent(jobId)}`;
-  console.log("[bg] pollTelegramBuild:", pollUrl);
+async function pollBuildWithConfig(statusPath, jobId) {
+  const { processBase, finalBase } = await resolveManagedBuildBases();
+  const pollUrl = `${processBase}${statusPath}?job_id=${encodeURIComponent(jobId)}`;
+  console.log("[bg] pollBuildWithConfig:", pollUrl);
 
   const pollRes = await fetchWithGrace(pollUrl, 10000);
   if (!pollRes.ok) throw new Error("HTTP " + pollRes.status);
@@ -175,8 +204,23 @@ async function pollTelegramBuild(jobId) {
   };
 }
 
-async function waitForTelegramBuild(endpoint) {
-  const start = await startTelegramBuild(endpoint);
+async function startManagedBuild(endpoint) {
+  const config = getManagedBuildConfig(endpoint);
+  if (!config) throw new Error("No managed build config for endpoint");
+  return await startBuildWithConfig(endpoint, config.startPath);
+}
+
+async function pollManagedBuild(endpoint, jobId) {
+  const config = getManagedBuildConfig(endpoint);
+  if (!config) throw new Error("No managed build config for endpoint");
+  return await pollBuildWithConfig(config.statusPath, jobId);
+}
+
+async function waitForManagedBuild(endpoint) {
+  const config = getManagedBuildConfig(endpoint);
+  if (!config) throw new Error("No managed build config for endpoint");
+
+  const start = await startBuildWithConfig(endpoint, config.startPath);
   if (start.url) {
     return { url: start.url };
   }
@@ -186,7 +230,7 @@ async function waitForTelegramBuild(endpoint) {
   while (Date.now() < deadline) {
     await sleep(TELEGRAM_BUILD_POLL_MS);
     try {
-      const status = await pollTelegramBuild(jobId);
+      const status = await pollBuildWithConfig(config.statusPath, jobId);
       if (status.url) {
         return { url: status.url };
       }
@@ -198,6 +242,14 @@ async function waitForTelegramBuild(endpoint) {
   }
 
   throw new Error("Timed out waiting for Telegram stream to be ready");
+}
+
+async function startTelegramBuild(endpoint) {
+  return await startBuildWithConfig(endpoint, "/api/stream-tg-build-start");
+}
+
+async function pollTelegramBuild(jobId) {
+  return await pollBuildWithConfig("/api/stream-tg-build-status", jobId);
 }
 
 async function resolveBases() {
@@ -317,10 +369,11 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
       try {
         console.log("[bg] waitAndBuild endpoint=", msg.endpoint);
 
-        if (isTelegramMediaEndpoint(msg.endpoint)) {
-          const telegramResult = await waitForTelegramBuild(msg.endpoint);
-          console.log("[bg] waitAndBuild telegram success ->", telegramResult.url);
-          sendResponse(telegramResult);
+        const managedBuild = getManagedBuildConfig(msg.endpoint);
+        if (managedBuild) {
+          const managedResult = await waitForManagedBuild(msg.endpoint);
+          console.log("[bg] waitAndBuild managed success ->", managedResult.url);
+          sendResponse(managedResult);
           return;
         }
 
@@ -385,6 +438,28 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
         sendResponse(result);
       } catch (e) {
         console.log("[bg] pollTelegramBuild error:", e && e.message);
+        sendResponse({ error: e && e.message });
+      }
+      return;
+    }
+
+    if (msg.action === "startManagedBuild") {
+      try {
+        const result = await startManagedBuild(msg.endpoint);
+        sendResponse(result);
+      } catch (e) {
+        console.log("[bg] startManagedBuild error:", e && e.message);
+        sendResponse({ error: e && e.message });
+      }
+      return;
+    }
+
+    if (msg.action === "pollManagedBuild") {
+      try {
+        const result = await pollManagedBuild(msg.endpoint, msg.jobId);
+        sendResponse(result);
+      } catch (e) {
+        console.log("[bg] pollManagedBuild error:", e && e.message);
         sendResponse({ error: e && e.message });
       }
       return;

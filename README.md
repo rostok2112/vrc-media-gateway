@@ -30,8 +30,8 @@ This README reflects the current `main` branch after the changes made since comm
 | --- | --- |
 | YouTube | Browser button or direct API call downloads via `yt-dlp`, uses Node-based JS challenge solving, then converts to HLS |
 | SoundCloud | Browser button appears only on track pages, preserves secret/private links when possible, downloads with `yt-dlp`, then converts to HLS |
-| Telegram images | Telegram Web context menu resolves the post, backend downloads via Telethon first, then falls back to HTML image parsing if needed |
-| Telegram videos | Telegram Web context menu or direct API call downloads media through Telethon, then converts to HLS |
+| Telegram images | Telegram endpoints classify the Telegram post first, then use Telethon for the real media and HTML image parsing only as a photo fallback |
+| Telegram videos | Telegram Web context menu and direct API calls can auto-detect video posts, download them through Telethon, then convert them to HLS |
 | Generic images | Right-click any image on most sites and export it to a static HLS video |
 | Spotify Web | Injected buttons in `open.spotify.com` generate `/api/stream-spotify` links and allow cache clearing |
 | Spotify Desktop | Spicetify bridge talks to the backend over websocket, routes Spotify audio into a virtual cable, and writes live HLS segments |
@@ -249,7 +249,7 @@ Site-specific behavior on the current branch:
 
 - YouTube: injects a `VRChat` button only on watch pages and survives SPA navigation
 - SoundCloud: injects only on real track pages, not artist/profile tabs
-- Telegram Web: adds a `VRChat` entry to the message context menu and tries video first, then image
+- Telegram Web: adds a `VRChat` entry to the message context menu and uses Telegram media auto-detection
 - Spotify Web: adds `VRChat` and `Clear cache` buttons near the player controls
 - Generic images: adds a `VRChat` item to the browser image context menu
 
@@ -262,6 +262,7 @@ Main HTTP endpoints:
 - `GET /api/stream-yt?url=<youtube-url>`
 - `GET /api/stream-sc?url=<soundcloud-url>`
 - `GET /api/stream-image?url=<image-url>&duration=300&width=1280&height=720`
+- `GET /api/stream-tg-media?url=<telegram-post-url>`
 - `GET /api/stream-tg-image?url=<telegram-post-url>`
 - `GET /api/stream-tg-video?url=<telegram-post-url>`
 - `GET /api/stream-spotify?url=<spotify-track-url>`

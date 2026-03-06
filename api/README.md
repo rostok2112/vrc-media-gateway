@@ -26,6 +26,7 @@ For full-stack usage, start the project from the repository root with:
 - `/api/stream-yt`
 - `/api/stream-sc`
 - `/api/stream-image`
+- `/api/stream-tg-media`
 - `/api/stream-tg-image`
 - `/api/stream-tg-video`
 - `/api/stream-spotify`

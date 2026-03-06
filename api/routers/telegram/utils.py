@@ -7,12 +7,16 @@ from urllib.parse import urlparse
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.custom.message import Message
-from telethon.tl.types import PeerChannel
+from telethon.tl.types import DocumentAttributeVideo, PeerChannel
 
 from api import config, utils
 
 
 _TG_RE = re.compile(r"https?://t\.me/([^/]+)/(\d+)")
+_TG_VIDEO_HTML_RE = re.compile(
+    r"(?:tgme_widget_message_video_player|js-message_video_player)",
+    flags=re.I,
+)
 _tg_client: Optional[TelegramClient] = None
 
 
@@ -72,6 +76,50 @@ async def get_tg_client() -> TelegramClient:
 
     return _tg_client
 
+
+async def get_tg_message(url: str) -> Message:
+    channel_entity, msg_id = _parse_tg_post(url)
+    client = await get_tg_client()
+    msg: Message = await client.get_messages(channel_entity, ids=msg_id)
+
+    if not msg:
+        raise RuntimeError("Telegram post not found")
+
+    return msg
+
+
+def classify_tg_message(msg: Optional[Message]) -> Optional[str]:
+    if not msg:
+        return None
+
+    if getattr(msg, "photo", None):
+        return "photo"
+
+    if getattr(msg, "video", None):
+        return "video"
+
+    file = getattr(msg, "file", None)
+    mime = getattr(file, "mime_type", None) or ""
+    if mime.startswith("video/"):
+        return "video"
+
+    document = getattr(msg, "document", None)
+    attributes = getattr(document, "attributes", []) or []
+    if any(isinstance(attr, DocumentAttributeVideo) for attr in attributes):
+        return "video"
+
+    return None
+
+
+async def get_tg_post_media_kind(url: str) -> Optional[str]:
+    msg = await get_tg_message(url)
+    return classify_tg_message(msg)
+
+
+def html_contains_tg_video(html: str) -> bool:
+    return bool(_TG_VIDEO_HTML_RE.search(html))
+
+
 async def download_tg_video(url: str) -> Path:
     """
     Download a video from a Telegram post URL and return the local Path to the mp4 file.
@@ -81,30 +129,32 @@ async def download_tg_video(url: str) -> Path:
     """
     channel_entity, msg_id = _parse_tg_post(url)
     client = await get_tg_client()
-    msg: Message = await client.get_messages(channel_entity, ids=msg_id)
+    msg = await get_tg_message(url)
 
-    if not msg or not getattr(msg, "file", None):
+    if not getattr(msg, "file", None):
         raise RuntimeError("No media in Telegram post")
 
-    mime = getattr(msg.file, "mime_type", None)
-    if not mime or not mime.startswith("video/"):
+    if classify_tg_message(msg) != "video":
         raise RuntimeError("Media is not a video")
 
     target = Path(config.OUTPUT) / f"{getattr(channel_entity, 'channel_id', str(channel_entity))}_{msg_id}.mp4"
     target.parent.mkdir(parents=True, exist_ok=True)
+
+    expected_size = getattr(getattr(msg, "file", None), "size", None)
+    if target.exists() and target.stat().st_size > 0:
+        if expected_size is None or target.stat().st_size == expected_size:
+            return target
 
     await client.download_media(msg, file=str(target))
     utils.ensure_file(target)
 
     return target
 
+
 async def download_tg_photo(url: str) -> Path:
-
-    channel_entity, msg_id = _parse_tg_post(url)
-
+    _, msg_id = _parse_tg_post(url)
     client = await get_tg_client()
-
-    msg = await client.get_messages(channel_entity, ids=msg_id)
+    msg = await get_tg_message(url)
 
     if not msg or not msg.photo:
         raise RuntimeError("No photo in telegram post")
@@ -116,6 +166,7 @@ async def download_tg_photo(url: str) -> Path:
     await client.download_media(msg.photo, file=str(out))
 
     return out
+
 
 def _parse_tg_post(url: str) -> Tuple[Union[str, PeerChannel], int]:
     """
@@ -152,6 +203,7 @@ def _parse_tg_post(url: str) -> Tuple[Union[str, PeerChannel], int]:
 
     raise ValueError("Invalid Telegram post URL")
 
+
 def parse_internal_channel_id(value: str) -> int:
     if "#-100" in value:
         value = value.split("#-100", 1)[1]
@@ -163,6 +215,7 @@ def parse_internal_channel_id(value: str) -> int:
         raise ValueError("invalid internal channel id")
 
     return int(value)
+
 
 async def resolve_public_tg_link(value: str) -> Optional[str]:
     channel_id = parse_internal_channel_id(value)

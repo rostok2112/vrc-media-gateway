@@ -1,25 +1,26 @@
 (() => {
-
-  const MENU_CLASS = 'MessageContextMenu_items';
-  const ITEM_CLASS = 'vrchat-tg-menu-item';
-  const POPUP_ID = 'vrchat-popup';
+  const MENU_CLASS = "MessageContextMenu_items";
+  const ITEM_CLASS = "vrchat-tg-menu-item";
+  const POPUP_ID = "vrchat-popup";
+  const TELEGRAM_BUILD_POLL_MS = 2000;
+  const TELEGRAM_BUILD_MAX_WAIT_MS = 15 * 60 * 1000;
 
   let lastContextMessage = null;
 
-  /* ================= TRACK RIGHT CLICK ================= */
-
-  document.addEventListener('contextmenu', (e) => {
-    const msg = e.target.closest('.Message');
-    if (msg && msg.dataset?.messageId) {
-      lastContextMessage = msg;
-      console.log('[VRChat TG] context message captured:', {
-        id: msg.id,
-        messageId: msg.dataset.messageId
-      });
-    }
-  }, true);
-
-  /* ================= POPUP ================= */
+  document.addEventListener(
+    "contextmenu",
+    e => {
+      const msg = e.target.closest(".Message");
+      if (msg && msg.dataset?.messageId) {
+        lastContextMessage = msg;
+        console.log("[VRChat TG] context message captured:", {
+          id: msg.id,
+          messageId: msg.dataset.messageId,
+        });
+      }
+    },
+    true
+  );
 
   function closePopup() {
     document.getElementById(POPUP_ID)?.remove();
@@ -27,7 +28,7 @@
 
   function showPopup(html) {
     closePopup();
-    const el = document.createElement('div');
+    const el = document.createElement("div");
     el.id = POPUP_ID;
     el.innerHTML = html;
     document.body.appendChild(el);
@@ -38,12 +39,12 @@
       <div class="vr-overlay">
         <div class="vr-box">
           <div class="vr-spinner"></div>
-          <div class="vr-text">Building stream link…</div>
+          <div class="vr-text">Preparing Telegram stream. Large videos can take a few minutes.</div>
           <button class="vr-btn secondary close">Cancel</button>
         </div>
       </div>
     `);
-    document.querySelector('.close')?.addEventListener('click', closePopup);
+    document.querySelector(".close")?.addEventListener("click", closePopup);
   }
 
   function popupResult(url) {
@@ -59,44 +60,42 @@
       </div>
     `);
 
-    const input = document.querySelector('.vr-input');
-    const copyBtn = document.querySelector('.copy');
+    const input = document.querySelector(".vr-input");
+    const copyBtn = document.querySelector(".copy");
 
     async function copy() {
       input.select();
       try {
         await navigator.clipboard.writeText(input.value);
       } catch {
-        document.execCommand('copy');
+        document.execCommand("copy");
       }
-      copyBtn.textContent = 'Copied ✓';
+      copyBtn.textContent = "Copied";
     }
 
     copy();
-    copyBtn.addEventListener('click', copy);
-    document.querySelector('.close')?.addEventListener('click', closePopup);
+    copyBtn.addEventListener("click", copy);
+    document.querySelector(".close")?.addEventListener("click", closePopup);
   }
 
-  function popupError() {
+  function popupError(message = "Failed to resolve message") {
     showPopup(`
       <div class="vr-overlay">
         <div class="vr-box">
-          <div class="vr-error">Failed to resolve message</div>
+          <div class="vr-error">${message}</div>
           <button class="vr-btn close">Close</button>
         </div>
       </div>
     `);
-    document.querySelector('.close')?.addEventListener('click', closePopup);
+    document.querySelector(".close")?.addEventListener("click", closePopup);
   }
-
-  /* ================= MESSAGE RESOLVE ================= */
 
   function resolveMessageUrl() {
     if (!lastContextMessage) return null;
 
     const messageId =
       lastContextMessage.dataset.messageId ||
-      lastContextMessage.id?.replace('message-', '');
+      lastContextMessage.id?.replace("message-", "");
 
     if (!messageId) return null;
 
@@ -108,60 +107,74 @@
     return {
       messageId,
       channelId,
-      postUrl: `https://t.me/c/${channelId}/${messageId}`
+      postUrl: `https://t.me/c/${channelId}/${messageId}`,
     };
   }
 
   function buildInternalFromPeer(peer) {
     if (!peer) return null;
-    return peer.startsWith('-100') ? peer : '-100' + peer;
+    return peer.startsWith("-100") ? peer : "-100" + peer;
   }
 
   function resolvePublicUsername(internal) {
     return new Promise(resolve => {
       if (!internal) return resolve(null);
       chrome.runtime.sendMessage(
-        { action: 'resolveTgPublicLink', internal },
+        { action: "resolveTgPublicLink", internal },
         res => resolve(res?.url || null)
       );
     });
   }
 
-  function waitAndBuild(postUrl) {
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function sendMessage(message) {
     return new Promise(resolve => {
-  
-      chrome.runtime.sendMessage(
-        { action: 'waitAndBuild', endpoint: '/api/stream-tg-video?url=' + encodeURIComponent(postUrl) },
-        r1 => {
-  
-          // якщо відео спрацювало
-          if (r1 && r1.url) {
-            return resolve(r1.url);
-          }
-  
-          console.log('[VRChat TG] video endpoint failed, trying image');
-  
-          chrome.runtime.sendMessage(
-            { action: 'waitAndBuild', endpoint: '/api/stream-tg-image?url=' + encodeURIComponent(postUrl) },
-            r2 => {
-  
-              if (r2 && r2.url) {
-                return resolve(r2.url);
-              }
-  
-              console.log('[VRChat TG] image endpoint also failed');
-  
-              resolve(null);
-            }
-          );
-  
-        }
-      );
-  
+      chrome.runtime.sendMessage(message, result => resolve(result || null));
     });
   }
 
-  /* ================= MAIN ================= */
+  async function waitForTelegramReady(postUrl) {
+    const endpoint = "/api/stream-tg-media?url=" + encodeURIComponent(postUrl);
+    const start = await sendMessage({
+      action: "startTelegramBuild",
+      endpoint,
+    });
+
+    if (!start || start.error) {
+      throw new Error(start?.error || "Failed to start Telegram build");
+    }
+
+    if (start.url) {
+      return start.url;
+    }
+
+    if (!start.jobId) {
+      throw new Error("Telegram build job was not created");
+    }
+
+    const deadline = Date.now() + TELEGRAM_BUILD_MAX_WAIT_MS;
+    while (Date.now() < deadline) {
+      await sleep(TELEGRAM_BUILD_POLL_MS);
+
+      const status = await sendMessage({
+        action: "pollTelegramBuild",
+        jobId: start.jobId,
+      });
+
+      if (!status || status.error) {
+        throw new Error(status?.error || "Telegram build failed");
+      }
+
+      if (status.url) {
+        return status.url;
+      }
+    }
+
+    throw new Error("Timed out waiting for Telegram stream to be ready");
+  }
 
   async function handleMenuClick() {
     popupLoading();
@@ -176,55 +189,51 @@
       const publicBase = await resolvePublicUsername(internal);
 
       if (publicBase) {
-        postUrl = publicBase.replace(/\/$/, '') + '/' + messageId;
+        postUrl = publicBase.replace(/\/$/, "") + "/" + messageId;
       }
 
-      const stream = await waitAndBuild(postUrl);
-      if (!stream) throw 2;
-
-      popupResult(stream);
-    } catch {
-      popupError();
+      const readyUrl = await waitForTelegramReady(postUrl);
+      popupResult(readyUrl);
+    } catch (e) {
+      popupError(e?.message || "Failed to resolve message");
     }
   }
 
-  /* ================= MENU INJECT ================= */
-
   function createMenuItem() {
-    const item = document.createElement('div');
-    item.className = 'MenuItem compact ' + ITEM_CLASS;
-    item.setAttribute('role', 'menuitem');
+    const item = document.createElement("div");
+    item.className = "MenuItem compact " + ITEM_CLASS;
+    item.setAttribute("role", "menuitem");
     item.tabIndex = 0;
     item.innerHTML = `
       <i class="icon icon-link" aria-hidden="true"></i>
       <span>VRChat</span>
     `;
-    item.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      handleMenuClick();
-    }, true);
+    item.addEventListener(
+      "mousedown",
+      e => {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        handleMenuClick();
+      },
+      true
+    );
     return item;
   }
 
   function insertIfNeeded(menu) {
-    if (menu.querySelector('.' + ITEM_CLASS)) return;
+    if (menu.querySelector("." + ITEM_CLASS)) return;
     const copy = [...menu.children].find(el =>
-      (el.textContent || '').includes('Копіювати')
+      (el.textContent || "").includes("Копіювати")
     );
     const btn = createMenuItem();
     copy ? copy.after(btn) : menu.appendChild(btn);
   }
 
   new MutationObserver(() => {
-    document
-      .querySelectorAll('.' + MENU_CLASS)
-      .forEach(insertIfNeeded);
+    document.querySelectorAll("." + MENU_CLASS).forEach(insertIfNeeded);
   }).observe(document.body, { childList: true, subtree: true });
 
-  /* ================= CSS ================= */
-
-  const style = document.createElement('style');
+  const style = document.createElement("style");
   style.textContent = `
   .vr-overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);z-index:999999;display:flex;align-items:center;justify-content:center}
   .vr-box{background:#1e1e1e;border-radius:14px;padding:18px;min-width:320px;color:#fff}
@@ -238,5 +247,4 @@
   .vr-error{color:#ff6a6a;text-align:center;margin-bottom:10px}
   `;
   document.head.appendChild(style);
-
 })();

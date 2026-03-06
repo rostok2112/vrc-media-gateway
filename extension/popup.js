@@ -1,9 +1,9 @@
 document.addEventListener("DOMContentLoaded", () => {
   const $ = id => document.getElementById(id);
-
   const POPUP_STATE_KEY = "popupState";
+  const TELEGRAM_BUILD_POLL_MS = 2000;
+  const TELEGRAM_BUILD_MAX_WAIT_MS = 15 * 60 * 1000;
 
-  // ================= ELEMENTS =================
   const input = $("input");
   const output = $("output");
   const getBtn = $("get");
@@ -23,13 +23,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const globalError = $("globalError");
 
-  // ================= SETTINGS TOGGLE =================
   toggleSettingsBtn.addEventListener("click", () => {
     settingsBox.style.display =
       settingsBox.style.display === "block" ? "none" : "block";
   });
 
-  // ================= POPUP STATE =================
   async function savePopupState() {
     await chrome.storage.session.set({
       [POPUP_STATE_KEY]: {
@@ -42,7 +40,6 @@ document.addEventListener("DOMContentLoaded", () => {
   async function loadPopupState() {
     const res = await chrome.storage.session.get(POPUP_STATE_KEY);
     const state = res[POPUP_STATE_KEY];
-
     if (!state) return;
 
     if (state.input) input.value = state.input;
@@ -51,12 +48,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   input.addEventListener("input", savePopupState);
 
-  // ================= UI VISIBILITY =================
   function updateVisibility() {
     useLocalApiToggle.style.display = usePublic.checked ? "flex" : "none";
   }
 
-  // ================= ERRORS =================
   function showError(msg) {
     globalError.textContent = msg;
     globalError.style.display = "block";
@@ -67,8 +62,6 @@ document.addEventListener("DOMContentLoaded", () => {
     globalError.style.display = "none";
   }
 
-  // ================= LOAD SETTINGS + AUTO-FILL LOGIC =================
-  // getSettings returns object including manualGlobal boolean
   async function loadSettingsAndMaybeAutofill() {
     const cfg = await chrome.runtime.sendMessage({ action: "getSettings" });
 
@@ -83,39 +76,34 @@ document.addEventListener("DOMContentLoaded", () => {
     clearError();
     await loadPopupState();
 
-    // decide whether to attempt auto-detect:
-    // rules: if using public && (no saved url OR saved url is NOT manual) => attempt auto
     const shouldAuto = usePublic.checked && (!cfg.globalUrl || !cfg.manualGlobal);
-    if (shouldAuto) {
-      // show spinner/status while detecting
-      spinner.style.display = "block";
-      status.textContent = "Auto-detecting public URL…";
-      clearError();
+    if (!shouldAuto) return;
 
-      try {
-        const r = await chrome.runtime.sendMessage({ action: "detectTunnel" });
-        if (r && r.url) {
-          globalUrl.value = r.url;
-          // save as auto (manualGlobal: false) so it can be overwritten next time
-          await chrome.runtime.sendMessage({
-            action: "saveSettings",
-            data: { globalUrl: r.url, manualGlobal: false }
-          });
-          status.textContent = "Public URL detected";
-        } else {
-          showError("Auto-detect failed");
-          status.textContent = "";
-        }
-      } catch (e) {
+    spinner.style.display = "block";
+    status.textContent = "Auto-detecting public URL...";
+    clearError();
+
+    try {
+      const r = await chrome.runtime.sendMessage({ action: "detectTunnel" });
+      if (r && r.url) {
+        globalUrl.value = r.url;
+        await chrome.runtime.sendMessage({
+          action: "saveSettings",
+          data: { globalUrl: r.url, manualGlobal: false }
+        });
+        status.textContent = "Public URL detected";
+      } else {
         showError("Auto-detect failed");
         status.textContent = "";
-      } finally {
-        spinner.style.display = "none";
       }
+    } catch {
+      showError("Auto-detect failed");
+      status.textContent = "";
+    } finally {
+      spinner.style.display = "none";
     }
   }
 
-  // ================= SAVE SETTINGS =================
   async function saveSettings(patch) {
     await chrome.runtime.sendMessage({
       action: "saveSettings",
@@ -125,10 +113,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   usePublic.addEventListener("change", async () => {
     updateVisibility();
-    // when toggled to usePublic, we may want to attempt autofill immediately if no manual value
     await saveSettings({ usePublicUrl: usePublic.checked });
     if (usePublic.checked) {
-      // re-run the autofill logic (non-blocking)
       loadSettingsAndMaybeAutofill().catch(() => {});
     }
   });
@@ -137,37 +123,32 @@ document.addEventListener("DOMContentLoaded", () => {
   localAddress.addEventListener("change", () => saveSettings({ localAddress: localAddress.value.trim() }));
   localPort.addEventListener("change", () => saveSettings({ localPort: localPort.value.trim() }));
 
-  // when user edits globalUrl manually -> set manualGlobal = true (if non-empty)
   globalUrl.addEventListener("change", async () => {
     const v = globalUrl.value.trim();
     if (v) {
       await saveSettings({ globalUrl: v, manualGlobal: true });
       clearError();
     } else {
-      // if user cleared the field, treat as non-manual so auto can fill later
       await saveSettings({ globalUrl: "", manualGlobal: false });
     }
   });
 
-  // ================= REFRESH PUBLIC =================
   refreshPublic.addEventListener("click", async () => {
     clearError();
     spinner.style.display = "block";
-    status.textContent = "Refreshing public URL…";
+    status.textContent = "Refreshing public URL...";
 
     try {
-      // background's refreshPublicUrl will detect and save (and mark manualGlobal:false)
       const r = await chrome.runtime.sendMessage({ action: "refreshPublicUrl" });
       if (r && r.url) {
         globalUrl.value = r.url;
-        // save is already done by background; but ensure local UI reflects manual=false
         await saveSettings({ globalUrl: r.url, manualGlobal: false });
         status.textContent = "Refreshed";
       } else {
         showError("Failed to detect public URL (local API unreachable)");
         status.textContent = "";
       }
-    } catch (e) {
+    } catch {
       showError("Failed to detect public URL");
       status.textContent = "";
     } finally {
@@ -175,40 +156,70 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // ================= GET (main action) =================
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async function waitForTelegramReady(endpoint) {
+    const start = await chrome.runtime.sendMessage({
+      action: "startTelegramBuild",
+      endpoint
+    });
+
+    if (!start || start.error) {
+      throw new Error(start?.error || "Failed to start Telegram build");
+    }
+
+    if (start.url) {
+      return start.url;
+    }
+
+    if (!start.jobId) {
+      throw new Error("Telegram build job was not created");
+    }
+
+    const deadline = Date.now() + TELEGRAM_BUILD_MAX_WAIT_MS;
+    while (Date.now() < deadline) {
+      await sleep(TELEGRAM_BUILD_POLL_MS);
+
+      const statusResult = await chrome.runtime.sendMessage({
+        action: "pollTelegramBuild",
+        jobId: start.jobId
+      });
+
+      if (!statusResult || statusResult.error) {
+        throw new Error(statusResult?.error || "Telegram build failed");
+      }
+
+      if (statusResult.url) {
+        return statusResult.url;
+      }
+    }
+
+    throw new Error("Timed out waiting for Telegram stream to be ready");
+  }
+
   getBtn.addEventListener("click", async () => {
     const src = input.value.trim();
     if (!src) return;
 
     spinner.style.display = "block";
-    status.textContent = "Waiting for server…";
+    status.textContent = "Waiting for server...";
     clearError();
 
     try {
-      // --- TELEGRAM: try video first, then image ---
       if (/^https?:\/\/t\.me\//.test(src)) {
-        status.textContent = "Trying Telegram video...";
-        let endpoint = "/api/stream-tg-video?url=" + encodeURIComponent(src);
-        let r = await chrome.runtime.sendMessage({ action: "waitAndBuild", endpoint });
+        status.textContent = "Preparing Telegram stream. Large videos can take a few minutes...";
+        const endpoint = "/api/stream-tg-media?url=" + encodeURIComponent(src);
+        const readyUrl = await waitForTelegramReady(endpoint);
 
-        if (!r || !r.url) {
-          status.textContent = "Video failed, trying Telegram image...";
-          endpoint = "/api/stream-tg-image?url=" + encodeURIComponent(src);
-          r = await chrome.runtime.sendMessage({ action: "waitAndBuild", endpoint });
-        }
-
-        if (!r || !r.url) {
-          throw new Error(r?.error || "Failed to process Telegram post (video+image)");
-        }
-
-        output.value = r.url;
-        await navigator.clipboard.writeText(r.url);
-        status.textContent = "Ready & copied ✔";
+        output.value = readyUrl;
+        await navigator.clipboard.writeText(readyUrl);
+        status.textContent = "Ready & copied";
         await savePopupState();
         return;
       }
 
-      // --- NON-TELEGRAM ---
       let endpoint;
       if (/soundcloud\.com|on\.soundcloud\.com/.test(src)) {
         endpoint = "/api/stream-sc?url=" + encodeURIComponent(src);
@@ -223,7 +234,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         output.value = link;
         await navigator.clipboard.writeText(link);
-        status.textContent = "Ready & copied ✓";
+        status.textContent = "Ready & copied";
         await savePopupState();
         return;
       } else if (/youtube\.com|youtu\.be/.test(src)) {
@@ -233,14 +244,13 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       const r = await chrome.runtime.sendMessage({ action: "waitAndBuild", endpoint });
-
       if (!r || !r.url) {
         throw new Error(r?.error || "Failed");
       }
 
       output.value = r.url;
       await navigator.clipboard.writeText(r.url);
-      status.textContent = "Ready & copied ✔";
+      status.textContent = "Ready & copied";
       await savePopupState();
     } catch (e) {
       status.textContent = "Error: " + e.message;
@@ -249,7 +259,5 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // ================= INIT =================
   loadSettingsAndMaybeAutofill();
-
 });

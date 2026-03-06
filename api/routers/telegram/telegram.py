@@ -47,7 +47,7 @@ def _is_hls_ready(sid: str) -> bool:
 
 
 def _tg_build_job_id(url: str, duration: int, width: int, height: int) -> str:
-    return utils.sid_for_url(url, f"tg-build|{duration}|{width}|{height}")
+    return utils.image_build_job_id(url, duration, width, height, scope="tg-build")
 
 
 def _job_snapshot(job_id: str) -> Optional[Dict[str, Any]]:
@@ -90,7 +90,7 @@ async def _ensure_tg_image_stream(
     media_kind: Optional[str] = None,
 ) -> str:
     url = _normalize_tg_url(url)
-    sid = utils.sid_for_url(url, f"{duration}{width}x{height}")
+    sid = utils.image_stream_sid(url, duration, width, height)
 
     if _is_hls_ready(sid):
         return sid
@@ -136,7 +136,7 @@ async def _ensure_tg_image_stream(
     if img_url.startswith("//"):
         img_url = "https:" + img_url
 
-    img_sid = utils.sid_for_url(img_url, f"{duration}{width}x{height}")
+    img_sid = utils.image_stream_sid(img_url, duration, width, height)
     if _is_hls_ready(img_sid):
         return img_sid
 

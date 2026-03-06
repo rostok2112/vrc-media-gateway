@@ -28,6 +28,8 @@ from api.segments_engine import registry
 
 logger = logging.getLogger(__name__)
 
+IMAGE_EXPORT_LAYOUT_VERSION = "fit-pad-v1"
+
 
 # =========================
 # LOW LEVEL
@@ -104,6 +106,12 @@ def image_to_mp4(
     width: int,
     height: int,
 ):
+    # Preserve the source aspect ratio and letterbox/pillarbox into the target frame.
+    vf = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+        "setsar=1"
+    )
     cmd = [
         config.FFMPEG, "-y",
         "-loop", "1",
@@ -111,7 +119,7 @@ def image_to_mp4(
         "-f", "lavfi",
         "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
         "-t", str(duration),
-        "-vf", f"scale={width}:{height}:flags=lanczos",
+        "-vf", vf,
         "-pix_fmt", "yuv420p",
         "-c:v", "libx264",
         "-preset", "fast",
@@ -254,6 +262,14 @@ def sid_for_url(url: str, *extra_parts) -> str:
     if extra_parts:
         s += "|" + "|".join(str(x) for x in extra_parts)
     return hashlib.md5(s.encode()).hexdigest()
+
+
+def image_stream_sid(url: str, duration: int, width: int, height: int) -> str:
+    return sid_for_url(url, IMAGE_EXPORT_LAYOUT_VERSION, f"{duration}{width}x{height}")
+
+
+def image_build_job_id(url: str, duration: int, width: int, height: int, scope: str = "img-build") -> str:
+    return sid_for_url(url, scope, IMAGE_EXPORT_LAYOUT_VERSION, f"{duration}{width}x{height}")
 
 def out_dir_for_sid(sid: str) -> Path:
     return config.STREAMS / sid

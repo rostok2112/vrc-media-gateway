@@ -43,7 +43,7 @@ def _is_hls_ready(sid: str) -> bool:
 
 
 def _img_job_id(url: str, duration: int, width: int, height: int) -> str:
-    return utils.sid_for_url(url, f"img-build|{duration}|{width}|{height}")
+    return utils.image_build_job_id(url, duration, width, height, scope="img-build")
 
 
 def _job_snapshot(job_id: str) -> Optional[Dict[str, Any]]:
@@ -61,7 +61,7 @@ def _job_snapshot(job_id: str) -> Optional[Dict[str, Any]]:
 
 async def _ensure_image_stream(url: str, duration: int, width: int, height: int) -> str:
     url = _normalize_image_url(url)
-    sid = utils.sid_for_url(url, f"{duration}{width}x{height}")
+    sid = utils.image_stream_sid(url, duration, width, height)
 
     if _is_hls_ready(sid):
         return sid
@@ -96,7 +96,7 @@ async def _run_img_build_job(job_id: str, url: str, duration: int, width: int, h
 
 async def _ensure_img_build_job(url: str, duration: int, width: int, height: int) -> Dict[str, Any]:
     url = _normalize_image_url(url)
-    sid = utils.sid_for_url(url, f"{duration}{width}x{height}")
+    sid = utils.image_stream_sid(url, duration, width, height)
     job_id = _img_job_id(url, duration, width, height)
 
     async with _IMG_BUILD_LOCK:

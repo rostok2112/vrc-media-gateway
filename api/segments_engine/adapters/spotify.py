@@ -61,18 +61,31 @@ class SpotifyAdapter(AudioSourceAdapter):
             return
 
         try:
+            restored_any = False
             if self.original_devices:
                 for pid, original_device_id in self.original_devices.items():
-                    result = war.set_app_output_device(process_id=pid, device=original_device_id)
-                    log.info(f"Process {pid} restored to original device {original_device_id}")
+                    try:
+                        war.set_app_output_device(process_id=pid, device=original_device_id)
+                        log.info(f"Process {pid} restored to original device {original_device_id}")
+                        restored_any = True
+                    except Exception:
+                        log.exception("Failed to restore Spotify device for pid=%s", pid)
+
+            if not restored_any:
+                result = war.clear_app_output_device(process_name=config.SPOTIFY)
+                log.info("Spotify route override cleared: %s", result)
 
             self._capture_active = False
+            self.original_devices = {}
         except Exception:
             log.exception("Failed to restore Spotify device")
 
         # optional: pause to avoid auto-next
         try:
-            await ws_registry.send(self.client, {"action": "pause"})
+            await ws_registry.rpc_call(self.client, "pause", {}, timeout=2.0)
         except Exception:
-            pass
+            try:
+                await ws_registry.send(self.client, {"action": "pause"})
+            except Exception:
+                pass
     

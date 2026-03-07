@@ -191,6 +191,11 @@
         try { Spicetify.Player.play(); } catch(e){}
         result = { ok: true };
       }
+
+      if (msg.method === "pause") {
+        try { Spicetify.Player.pause(); } catch(e){}
+        result = { ok: true };
+      }
   
     } catch (e) {
       console.error("handleRpc error", e);
@@ -267,6 +272,16 @@
     ws.onmessage = async (ev) => {
       try {
         const msg = JSON.parse(ev.data);
+
+        if (msg.action === "seek") {
+          try { Spicetify.Player.seek(msg.position_ms || 0); } catch(e){}
+          return;
+        }
+
+        if (msg.action === "pause") {
+          try { Spicetify.Player.pause(); } catch(e){}
+          return;
+        }
     
         // 🔥 ОТВЕЧАЕМ НА RPC ОТ БЕКЕНДА
         if (msg.type === "rpc_request") {

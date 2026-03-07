@@ -80,6 +80,21 @@
     document.querySelector(".close")?.addEventListener("click", closePopup);
   }
 
+  function resolveEndpoint(endpoint) {
+    popupLoading();
+
+    chrome.runtime.sendMessage(
+      { action: "waitAndBuild", endpoint },
+      (resp) => {
+        if (!resp || !resp.url) {
+          popupError(resp?.error);
+          return;
+        }
+        popupResult(resp.url);
+      }
+    );
+  }
+
   /* ---------- styles (copied from youtube.js) ---------- */
 
   const style = document.createElement("style");
@@ -168,24 +183,24 @@
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.action === "vr_resolve_image") {
       const imageUrl = msg.url;
-
-      popupLoading();
-
       const endpoint = "/api/stream-image?url=" + encodeURIComponent(imageUrl);
+      resolveEndpoint(endpoint);
+    }
 
-      chrome.runtime.sendMessage(
-        { action: "waitAndBuild", endpoint },
-        (resp) => {
-          if (!resp || !resp.url) {
-            popupError(resp?.error);
-            return;
-          }
-          popupResult(resp.url);
-        }
-      );
+    if (msg.action === "vr_resolve_video") {
+      const videoUrl = msg.url;
+      let endpoint = "/api/stream-video?url=" + encodeURIComponent(videoUrl);
+      if (msg.referer) {
+        endpoint += "&referer=" + encodeURIComponent(msg.referer);
+      }
+      resolveEndpoint(endpoint);
     }
 
     if (msg.action === "vr_image_error") {
+      popupError(msg.error);
+    }
+
+    if (msg.action === "vr_video_error") {
       popupError(msg.error);
     }
   });

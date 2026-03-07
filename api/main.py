@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from .routers import (
-    telegram, sc, yt, img, segments, infrastructure, spotify, local_media
+    telegram, sc, yt, img, video, segments, infrastructure, spotify, local_media
 )
 from .websockets import router as ws_router
 
@@ -14,6 +14,7 @@ app.include_router(telegram.router, prefix=API_ROUTE_PREFIX)
 app.include_router(sc.router, prefix=API_ROUTE_PREFIX)
 app.include_router(yt.router, prefix=API_ROUTE_PREFIX)
 app.include_router(img.router, prefix=API_ROUTE_PREFIX)
+app.include_router(video.router, prefix=API_ROUTE_PREFIX)
 app.include_router(segments.router, prefix=API_ROUTE_PREFIX)
 app.include_router(infrastructure.router, prefix=API_ROUTE_PREFIX)
 app.include_router(spotify.router, prefix=API_ROUTE_PREFIX)

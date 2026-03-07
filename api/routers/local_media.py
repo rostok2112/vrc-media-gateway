@@ -466,7 +466,7 @@ async def stream_local_build_status(request: Request, job_id: str = Query(...)):
 async def clear_cache_all(request: Request):
     _ensure_loopback_request(request)
 
-    from api.routers import img, sc, yt
+    from api.routers import img, sc, yt, video
     from api.routers.telegram import telegram as telegram_router
 
     await registry.stop_all_streams()
@@ -474,6 +474,7 @@ async def clear_cache_all(request: Request):
         img.clear_img_build_jobs(),
         sc.clear_sc_build_jobs(),
         yt.clear_yt_build_jobs(),
+        video.clear_video_build_jobs(),
         telegram_router.clear_tg_build_jobs(),
         clear_local_media_build_jobs(),
         return_exceptions=True,

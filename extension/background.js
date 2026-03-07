@@ -74,6 +74,11 @@ function isProbablyLocalPath(value) {
   );
 }
 
+function isProbablyDirectVideoUrl(value) {
+  const src = String(value || "").trim();
+  return /\.(mp4|m4v|mov|mkv|avi|webm|ts|mts|m2ts|flv|m3u8)(?:[?#].*)?$/i.test(src);
+}
+
 function isTelegramMediaEndpoint(endpoint) {
   return typeof endpoint === "string" &&
     /^\/api\/stream-tg-(media|video|image)\?/.test(endpoint);
@@ -103,6 +108,12 @@ function getManagedBuildConfig(endpoint) {
     return {
       startPath: "/api/stream-image-build-start",
       statusPath: "/api/stream-image-build-status"
+    };
+  }
+  if (endpoint.startsWith("/api/stream-video?")) {
+    return {
+      startPath: "/api/stream-video-build-start",
+      statusPath: "/api/stream-video-build-status"
     };
   }
   return null;
@@ -499,6 +510,13 @@ function buildManagedEndpointForSource(src) {
     return {
       endpoint: "/api/stream-yt?url=" + encodeURIComponent(src),
       sourceKind: "youtube",
+      sourceLabel: src
+    };
+  }
+  if (isProbablyDirectVideoUrl(src)) {
+    return {
+      endpoint: "/api/stream-video?url=" + encodeURIComponent(src),
+      sourceKind: "video",
       sourceLabel: src
     };
   }
@@ -1083,6 +1101,7 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
 });
 
 const VR_IMAGE_MENU_ID = "vrchat-resolve-image";
+const VR_VIDEO_MENU_ID = "vrchat-resolve-video";
 
 chrome.runtime.onInstalled.addListener(() => {
   try {
@@ -1092,6 +1111,11 @@ chrome.runtime.onInstalled.addListener(() => {
         title: "VRChat",
         contexts: ["image"]
       });
+      chrome.contextMenus.create({
+        id: VR_VIDEO_MENU_ID,
+        title: "VRChat",
+        contexts: ["video"]
+      });
       console.log("[bg] image context menu created");
     });
   } catch (e) {
@@ -1100,22 +1124,44 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId !== VR_IMAGE_MENU_ID) return;
+  if (info.menuItemId === VR_IMAGE_MENU_ID) {
+    const imageUrl = info.srcUrl;
 
-  const imageUrl = info.srcUrl;
+    console.log("[bg] image menu clicked", imageUrl);
 
-  console.log("[bg] image menu clicked", imageUrl);
+    if (!imageUrl) {
+      chrome.tabs.sendMessage(tab.id, {
+        action: "vr_image_error",
+        error: "No image url"
+      });
+      return;
+    }
 
-  if (!imageUrl) {
     chrome.tabs.sendMessage(tab.id, {
-      action: "vr_image_error",
-      error: "No image url"
+      action: "vr_resolve_image",
+      url: imageUrl
+    });
+    return;
+  }
+
+  if (info.menuItemId !== VR_VIDEO_MENU_ID) return;
+
+  const videoUrl = info.srcUrl;
+  const referer = info.frameUrl || info.pageUrl || "";
+
+  console.log("[bg] video menu clicked", { videoUrl, referer });
+
+  if (!videoUrl) {
+    chrome.tabs.sendMessage(tab.id, {
+      action: "vr_video_error",
+      error: "No video url"
     });
     return;
   }
 
   chrome.tabs.sendMessage(tab.id, {
-    action: "vr_resolve_image",
-    url: imageUrl
+    action: "vr_resolve_video",
+    url: videoUrl,
+    referer
   });
 });

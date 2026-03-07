@@ -405,8 +405,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (job.status === "ready" && job.url) {
       output.value = job.url;
-      if (autoCopy) {
+      if (autoCopy && !job.autoCopied) {
         const copied = await copyResult(job.url);
+        if (copied) {
+          try {
+            await chrome.runtime.sendMessage({
+              action: "markQuickLinkJobCopied",
+              url: job.url
+            });
+          } catch (e) {
+            console.log("[popup] markQuickLinkJobCopied error:", e && e.message);
+          }
+        }
         status.textContent = copied ? "Ready & copied" : "Ready";
       } else {
         status.textContent = "Ready";
@@ -453,7 +463,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    const done = await applyQuickLinkState(job, job.status === "ready");
+    const done = await applyQuickLinkState(job, job.status === "ready" && !job.autoCopied);
     if (!done) {
       await pollQuickLinkUntilSettled();
     }

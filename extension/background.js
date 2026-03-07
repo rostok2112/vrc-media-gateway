@@ -380,9 +380,32 @@ function quickLinkStateBase(patch) {
     endpoint: "",
     jobKind: "",
     jobId: "",
+    autoCopied: false,
+    autoCopiedAt: 0,
     ...patch,
     updatedAt: Date.now()
   };
+}
+
+async function markQuickLinkJobCopied(url) {
+  const job = await getQuickLinkJobState();
+  if (!job || job.status !== "ready" || !job.url) {
+    return { ok: false, status: "idle" };
+  }
+  if (url && job.url !== url) {
+    return { ok: false, status: "stale" };
+  }
+  if (job.autoCopied) {
+    return { ok: true, status: "already-marked" };
+  }
+
+  const updated = quickLinkStateBase({
+    ...job,
+    autoCopied: true,
+    autoCopiedAt: Date.now()
+  });
+  await setQuickLinkJobState(updated);
+  return { ok: true, status: "marked" };
 }
 
 async function startLocalPathBuild(rawPath) {
@@ -937,6 +960,17 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
       } catch (e) {
         console.log("[bg] getQuickLinkJobStatus error:", e && e.message);
         sendResponse({ status: "error", error: e && e.message ? e.message : String(e) });
+      }
+      return;
+    }
+
+    if (msg.action === "markQuickLinkJobCopied") {
+      try {
+        const result = await markQuickLinkJobCopied(msg.url || "");
+        sendResponse(result);
+      } catch (e) {
+        console.log("[bg] markQuickLinkJobCopied error:", e && e.message);
+        sendResponse({ ok: false, error: e && e.message ? e.message : String(e) });
       }
       return;
     }

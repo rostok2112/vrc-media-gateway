@@ -4,8 +4,6 @@
   const POPUP_ID = "vrchat-popup";
   let abortController = null;
 
-  /* ---------- popup helpers (1:1 youtube style) ---------- */
-
   function closePopup() {
     document.getElementById(POPUP_ID)?.remove();
     abortController?.abort();
@@ -18,26 +16,27 @@
     wrap.id = POPUP_ID;
     wrap.innerHTML = inner;
     document.body.appendChild(wrap);
+    return wrap;
   }
 
   function popupLoading() {
     abortController = new AbortController();
 
-    showPopup(`
+    const wrap = showPopup(`
       <div class="vr-overlay">
         <div class="vr-box">
           <div class="vr-spinner"></div>
-          <div class="vr-text">Building stream link…</div>
+          <div class="vr-text">Building stream link...</div>
           <button class="vr-btn secondary cancel">Cancel</button>
         </div>
       </div>
     `);
 
-    document.querySelector(".cancel")?.addEventListener("click", closePopup);
+    wrap.querySelector(".cancel")?.addEventListener("click", closePopup);
   }
 
   function popupResult(url) {
-    showPopup(`
+    const wrap = showPopup(`
       <div class="vr-overlay">
         <div class="vr-box">
           <input class="vr-input" readonly value="${url}">
@@ -49,8 +48,8 @@
       </div>
     `);
 
-    const input = document.querySelector(".vr-input");
-    const copyBtn = document.querySelector(".copy");
+    const input = wrap.querySelector(".vr-input");
+    const copyBtn = wrap.querySelector(".copy");
 
     async function copy() {
       input.select();
@@ -59,16 +58,16 @@
       } catch {
         document.execCommand("copy");
       }
-      copyBtn.textContent = "Copied ✓";
+      copyBtn.textContent = "Copied OK";
     }
 
-    copy(); // auto copy
+    copy();
     copyBtn.onclick = copy;
-    document.querySelector(".close").onclick = closePopup;
+    wrap.querySelector(".close")?.addEventListener("click", closePopup);
   }
 
   function popupError(text) {
-    showPopup(`
+    const wrap = showPopup(`
       <div class="vr-overlay">
         <div class="vr-box">
           <div class="vr-error">${text || "Failed to build stream link"}</div>
@@ -77,7 +76,7 @@
       </div>
     `);
 
-    document.querySelector(".close")?.addEventListener("click", closePopup);
+    wrap.querySelector(".close")?.addEventListener("click", closePopup);
   }
 
   function resolveEndpoint(endpoint) {
@@ -94,8 +93,6 @@
       }
     );
   }
-
-  /* ---------- styles (copied from youtube.js) ---------- */
 
   const style = document.createElement("style");
   style.textContent = `
@@ -167,6 +164,7 @@
       margin-bottom: 12px;
     }
   `;
+
   function injectStyle() {
     const target = document.head || document.documentElement;
     if (target) {
@@ -175,10 +173,8 @@
       setTimeout(injectStyle, 50);
     }
   }
-  
-  injectStyle();
 
-  /* ---------- messages from background ---------- */
+  injectStyle();
 
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.action === "vr_resolve_image") {

@@ -26,6 +26,8 @@ class StreamWriter:
         source_adapter,
         total_segments: Optional[int] = None,
         prefetch: int = 2,
+        video_input_args: Optional[List[str]] = None,
+        video_codec_args: Optional[List[str]] = None,
     ):
         self.sid = sid
         self.out_dir = Path(out_dir)
@@ -34,6 +36,8 @@ class StreamWriter:
         self.ffmpeg_bin = ffmpeg_bin
         self.input_args = input_args
         self.audio_codec_args = audio_codec_args
+        self.video_input_args = list(video_input_args or [])
+        self.video_codec_args = list(video_codec_args or [])
         self.segment_time = int(segment_time)
         self.source = source_adapter
         self.total_segments = total_segments
@@ -101,11 +105,21 @@ class StreamWriter:
         # IMPORTANT: use hls_base_url pointing to API segment endpoint (for X-Accel flow)
         base_url = f"/api/stream-spotify-segment/{self.sid}/"
 
-        cmd = [
-            self.ffmpeg_bin,
-            "-n",
-            *self.input_args,
-            "-vn",
+        cmd = [self.ffmpeg_bin, "-n"]
+        if self.video_input_args:
+            cmd.extend(self.video_input_args)
+        cmd.extend(self.input_args)
+
+        if self.video_input_args:
+            cmd.extend([
+                "-map", "0:v:0",
+                "-map", "1:a:0",
+                *self.video_codec_args,
+            ])
+        else:
+            cmd.extend(["-vn"])
+
+        cmd.extend([
             *self.audio_codec_args,
             "-f", "hls",
             "-hls_time", str(self.segment_time),
@@ -115,7 +129,7 @@ class StreamWriter:
             "-hls_base_url", base_url,
             "-hls_segment_filename", seg_pattern,
             playlist
-        ]
+        ])
 
         
         log.info("starting ffmpeg: %s", " ".join(cmd))

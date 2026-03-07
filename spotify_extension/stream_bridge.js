@@ -19,7 +19,8 @@
       globalUrl: "",
       manualGlobal: false,
       spotifyPrefetchSegments: 10,
-      spotifyPrefetchSegmentDuration: 2
+      spotifyPrefetchSegmentDuration: 2,
+      spotifyShowTrackInfo: true
     };
   }
 
@@ -68,7 +69,8 @@
     return {
       prefetch,
       segmentTime,
-      totalDuration: prefetch * segmentTime
+      totalDuration: prefetch * segmentTime,
+      showInfo: cfg.spotifyShowTrackInfo !== false
     };
   }
 
@@ -77,9 +79,85 @@
     const params = new URLSearchParams({
       url: openUrl,
       segment_time: String(streaming.segmentTime),
-      prefetch: String(streaming.prefetch)
+      prefetch: String(streaming.prefetch),
+      show_info: streaming.showInfo ? "1" : "0"
     });
     return `${base.replace(/\/$/, "")}/api/stream-spotify?${params.toString()}`;
+  }
+
+  function firstNonEmpty(...values) {
+    for (const value of values) {
+      const text = typeof value === "string" ? value.trim() : "";
+      if (text) return text;
+    }
+    return "";
+  }
+
+  function normalizeSpotifyCoverUrl(value) {
+    const text = typeof value === "string" ? value.trim() : "";
+    if (!text) return "";
+    if (text.startsWith("spotify:image:")) {
+      const imageId = text.split(":").pop();
+      return imageId ? `https://i.scdn.co/image/${imageId}` : "";
+    }
+    if (text.startsWith("//")) {
+      return `https:${text}`;
+    }
+    return text;
+  }
+
+  function getCurrentTrackMetadata() {
+    let durationMs = 0;
+    let title = "";
+    let performer = "";
+    let coverUrl = "";
+
+    try {
+      const data = Spicetify.Player.data || {};
+      const item = data.item || {};
+      const meta = item.metadata || {};
+
+      durationMs = Number(
+        item?.duration?.milliseconds ??
+        item?.durationMilliseconds ??
+        meta?.duration_ms ??
+        0
+      ) || 0;
+
+      title = firstNonEmpty(
+        meta.title,
+        meta.track,
+        item.name,
+        item.title
+      );
+
+      performer = firstNonEmpty(
+        meta.artist_name,
+        meta.artists,
+        Array.isArray(item.artists) ? item.artists.map(a => a?.name).filter(Boolean).join(", ") : "",
+        Array.isArray(item.artistsWithRoles) ? item.artistsWithRoles.map(a => a?.name).filter(Boolean).join(", ") : "",
+        item.artist
+      );
+
+      coverUrl = normalizeSpotifyCoverUrl(firstNonEmpty(
+        meta.image_xlarge_url,
+        meta.image_large_url,
+        meta.image_url,
+        meta.album_cover_url,
+        item?.album?.images?.[0]?.url,
+        item?.images?.[0]?.url,
+        data?.images?.[0]?.url
+      ));
+    } catch (e) {
+      console.warn("[stream_bridge] getCurrentTrackMetadata failed", e);
+    }
+
+    return {
+      duration_ms: Math.max(0, Math.floor(durationMs)),
+      title: title || "Spotify track",
+      performer,
+      cover_url: coverUrl
+    };
   }
 
   // WS RPC helper (use existing WS connection)
@@ -104,13 +182,7 @@
       }
   
       if (msg.method === "metadata") {
-        let duration = 0;
-        try {
-          const data = Spicetify.Player.data;
-          if (data?.item?.duration?.milliseconds)
-            duration = data.item.duration.milliseconds;
-        } catch(e){}
-        result = { duration_ms: duration };
+        result = getCurrentTrackMetadata();
       }
   
       if (msg.method === "seek_play") {
@@ -458,7 +530,8 @@
           {
             url: openUrl,
             segment_time: streaming.segmentTime,
-            prefetch: streaming.prefetch
+            prefetch: streaming.prefetch,
+            show_info: streaming.showInfo
           },
           4000
         );
@@ -695,12 +768,30 @@ function flashTemp(el, txt, ms = 900) {
     totalPrefetchDuration.disabled = true;
     totalPrefetchDuration.style.opacity = "0.85";
 
+    const showInfoWrap = document.createElement("div");
+    showInfoWrap.style.display = "flex";
+    showInfoWrap.style.alignItems = "center";
+    showInfoWrap.style.gap = "8px";
+    showInfoWrap.style.marginTop = "8px";
+
+    const showInfoCheckbox = document.createElement("input");
+    showInfoCheckbox.type = "checkbox";
+    showInfoCheckbox.checked = streamingCfg.showInfo;
+
+    const showInfoLabel = document.createElement("div");
+    showInfoLabel.textContent = "Show track cover/title/artist";
+    showInfoLabel.style.fontSize = "12px";
+
+    showInfoWrap.appendChild(showInfoCheckbox);
+    showInfoWrap.appendChild(showInfoLabel);
+
     streamingSection.appendChild(prefetchCountLabel);
     streamingSection.appendChild(prefetchCount);
     streamingSection.appendChild(segmentDurationLabel);
     streamingSection.appendChild(segmentDuration);
     streamingSection.appendChild(totalDurationLabel);
     streamingSection.appendChild(totalPrefetchDuration);
+    streamingSection.appendChild(showInfoWrap);
 
     root.appendChild(streamingSection);
 
@@ -722,7 +813,8 @@ function flashTemp(el, txt, ms = 900) {
       if (save) {
         saveSettings({
           spotifyPrefetchSegments: prefetch,
-          spotifyPrefetchSegmentDuration: duration
+          spotifyPrefetchSegmentDuration: duration,
+          spotifyShowTrackInfo: !!showInfoCheckbox.checked
         });
       }
     }
@@ -799,6 +891,7 @@ function flashTemp(el, txt, ms = 900) {
     segmentDuration.onchange = () => syncStreamingSettings(true);
     prefetchCount.onblur = () => syncStreamingSettings(true);
     segmentDuration.onblur = () => syncStreamingSettings(true);
+    showInfoCheckbox.onchange = () => syncStreamingSettings(true);
   
     Spicetify.PopupModal.display({
       title: "VRChat settings",

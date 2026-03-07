@@ -1,7 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
-import math
 from pathlib import Path
 from fastapi import APIRouter, Query, Request, Response, HTTPException
 from fastapi.responses import RedirectResponse
@@ -24,9 +23,15 @@ async def stream_spotify(
     request: Request,
     segment_time: int | None = Query(default=None, ge=1),
     prefetch: int | None = Query(default=None, ge=1),
+    show_info: bool | None = Query(default=None),
 ):
-    segment_time, prefetch = spotify_utils.resolve_stream_options(segment_time, prefetch)
-    sid = spotify_utils.spotify_stream_sid(url, segment_time=segment_time, prefetch=prefetch)
+    segment_time, prefetch, show_info = spotify_utils.resolve_stream_options(segment_time, prefetch, show_info)
+    sid = spotify_utils.spotify_stream_sid(
+        url,
+        segment_time=segment_time,
+        prefetch=prefetch,
+        show_info=show_info,
+    )
 
     out_dir = utils.out_dir_for_sid(sid)
     playlist = out_dir / "playlist.m3u8"
@@ -37,19 +42,32 @@ async def stream_spotify(
 
     if not meta_path.exists():
         try:
-            duration_ms = await spotify_utils.get_duration_ms_via_ws(url)
+            track_meta = await spotify_utils.get_track_metadata_via_ws(url)
         except Exception:
             raise HTTPException(400, "spotify load failed")
 
-        total_segments = math.ceil(duration_ms / (segment_time * 1000))
-        meta = {
-            "url": url,
-            "segment_time": segment_time,
-            "prefetch": prefetch,
-            "total_segments": total_segments,
-            "start_time": None,
-        }
+        meta = spotify_utils.build_spotify_stream_metadata(
+            url,
+            duration_ms=int(track_meta.get("duration_ms", 0) or 0),
+            segment_time=segment_time,
+            prefetch=prefetch,
+            show_info=show_info,
+            title=str(track_meta.get("title") or ""),
+            performer=str(track_meta.get("performer") or ""),
+            cover_url=str(track_meta.get("cover_url") or ""),
+        )
         meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    else:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+
+    if show_info:
+        try:
+            spotify_utils.ensure_spotify_poster_assets(out_dir, meta)
+        except Exception:
+            logger.exception("spotify poster asset build failed for %s", sid)
 
     # PREFETCH LOCK: read timeout from config; if <=0 then wait indefinitely
     prefetch_timeout_cfg = config.SPOTIFY_HLS_OPTS.get("prefetch_timeout", None)
@@ -81,8 +99,14 @@ async def clear_spotify_cache(
     url: str,
     segment_time: int | None = Query(default=None, ge=1),
     prefetch: int | None = Query(default=None, ge=1),
+    show_info: bool | None = Query(default=None),
 ):
-    return await spotify_utils.clear_spotify_cache(url, segment_time=segment_time, prefetch=prefetch)
+    return await spotify_utils.clear_spotify_cache(
+        url,
+        segment_time=segment_time,
+        prefetch=prefetch,
+        show_info=show_info,
+    )
 
 
 @router.get("/stream-spotify-playlist/{sid}")

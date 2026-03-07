@@ -11,6 +11,16 @@ _writers: Dict[str, StreamWriter] = {}
 _lock = asyncio.Lock()
 
 
+def _bool_from_meta(value, default: bool = False) -> bool:
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(int(value))
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _default_ff_args():
     input_args = getattr(
         config,
@@ -44,6 +54,7 @@ async def get_or_create_writer(sid: str) -> StreamWriter:
         total_segments: Optional[int] = None
         segment_time = int(config.SPOTIFY_HLS_OPTS.get("hls_time", 3))
         prefetch = int(config.SPOTIFY_HLS_OPTS.get("prefetch", 2))
+        show_info = _bool_from_meta(config.SPOTIFY_HLS_OPTS.get("show_info", True), True)
         meta_path = out_dir / "metadata.json"
         try:
             if meta_path.exists():
@@ -56,10 +67,29 @@ async def get_or_create_writer(sid: str) -> StreamWriter:
                     segment_time = int(meta.get("seg_time"))
                 if meta.get("prefetch") is not None:
                     prefetch = int(meta.get("prefetch"))
+                show_info = _bool_from_meta(meta.get("show_info"), show_info)
         except Exception:
             pass
 
         adapter = SpotifyAdapter()
+        video_input_args = []
+        video_codec_args = []
+        if show_info:
+            poster_path = out_dir / "audio_poster.png"
+            if poster_path.exists() and poster_path.stat().st_size > 0:
+                video_input_args = [
+                    "-loop", "1",
+                    "-i", str(poster_path),
+                ]
+                video_codec_args = [
+                    "-vf", "setsar=1",
+                    "-pix_fmt", "yuv420p",
+                    "-c:v", "libx264",
+                    "-preset", "fast",
+                    "-crf", "16",
+                    "-profile:v", "high",
+                    "-level", "4.2",
+                ]
 
         w = StreamWriter(
             sid=sid,
@@ -67,6 +97,8 @@ async def get_or_create_writer(sid: str) -> StreamWriter:
             ffmpeg_bin=config.FFMPEG,
             input_args=input_args,
             audio_codec_args=audio_codec_args,
+            video_input_args=video_input_args,
+            video_codec_args=video_codec_args,
             segment_time=segment_time,
             source_adapter=adapter,
             total_segments=total_segments,

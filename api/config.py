@@ -41,6 +41,7 @@ SPOTIFY_HLS_OPTS = {
     "hls_playlist_type": "event",
     "prefetch_timeout": 0, 
     "prefetch": 10,
+    "show_info": False,
 }
 
 AUDIO_TARGET = {

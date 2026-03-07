@@ -42,6 +42,7 @@ async def spotify_ws(ws: WebSocket):
                             params.get("url"),
                             segment_time=params.get("segment_time"),
                             prefetch=params.get("prefetch"),
+                            show_info=params.get("show_info"),
                         )
                     except Exception as e:
                         result = {"ok": False, "error": str(e)}

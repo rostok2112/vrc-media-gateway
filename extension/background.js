@@ -48,15 +48,29 @@ async function autoDetectOnStartup() {
 
 chrome.runtime.onStartup.addListener(autoDetectOnStartup);
 chrome.runtime.onInstalled.addListener(autoDetectOnStartup);
+cleanupStaleLocalMediaUploads().catch(() => {});
 
 const LONG_BUILD_GRACE_MS = 20000;
 const TELEGRAM_BUILD_POLL_MS = 2000;
 const TELEGRAM_BUILD_MAX_WAIT_MS = 15 * 60 * 1000;
 const RETRYABLE_BUILD_STATUSES = new Set([408, 429, 502, 503, 504, 522, 523, 524]);
 const LOCAL_MEDIA_API_BASE = "http://127.0.0.1:5000";
+const QUICK_LINK_JOB_KEY = "activeQuickLinkJob";
+const LOCAL_MEDIA_UPLOAD_DB_NAME = "vrchat-local-media";
+const LOCAL_MEDIA_UPLOAD_STORE = "uploads";
+const LOCAL_MEDIA_UPLOAD_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 function isLongBuildEndpoint(endpoint) {
   return typeof endpoint === "string" && endpoint.startsWith("/api/stream-");
+}
+
+function isProbablyLocalPath(value) {
+  const src = String(value || "").trim();
+  return (
+    /^[a-zA-Z]:[\\/]/.test(src) ||
+    /^\\\\/.test(src) ||
+    /^file:\/\//i.test(src)
+  );
 }
 
 function isTelegramMediaEndpoint(endpoint) {
@@ -108,6 +122,113 @@ function buildStreamUrl(base, sid) {
 function endpointQuery(endpoint) {
   const idx = String(endpoint || "").indexOf("?");
   return idx >= 0 ? endpoint.slice(idx) : "";
+}
+
+async function getSessionValue(key) {
+  const result = await chrome.storage.session.get(key);
+  return result[key];
+}
+
+async function setSessionValue(key, value) {
+  if (value === undefined || value === null) {
+    await chrome.storage.session.remove(key);
+    return null;
+  }
+  await chrome.storage.session.set({ [key]: value });
+  return value;
+}
+
+async function getQuickLinkJobState() {
+  return await getSessionValue(QUICK_LINK_JOB_KEY);
+}
+
+async function setQuickLinkJobState(job) {
+  return await setSessionValue(QUICK_LINK_JOB_KEY, job);
+}
+
+function openLocalMediaUploadDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(LOCAL_MEDIA_UPLOAD_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(LOCAL_MEDIA_UPLOAD_STORE)) {
+        db.createObjectStore(LOCAL_MEDIA_UPLOAD_STORE);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error("Failed to open local media DB"));
+  });
+}
+
+async function getLocalMediaUpload(uploadId) {
+  const db = await openLocalMediaUploadDb();
+  return await new Promise((resolve, reject) => {
+    const tx = db.transaction(LOCAL_MEDIA_UPLOAD_STORE, "readonly");
+    const store = tx.objectStore(LOCAL_MEDIA_UPLOAD_STORE);
+    const req = store.get(uploadId);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error || new Error("Failed to read local upload"));
+    tx.oncomplete = () => db.close();
+    tx.onabort = () => db.close();
+    tx.onerror = () => db.close();
+  });
+}
+
+async function deleteLocalMediaUpload(uploadId) {
+  if (!uploadId) return;
+  const db = await openLocalMediaUploadDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(LOCAL_MEDIA_UPLOAD_STORE, "readwrite");
+    const store = tx.objectStore(LOCAL_MEDIA_UPLOAD_STORE);
+    const req = store.delete(uploadId);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error || new Error("Failed to delete local upload"));
+    tx.oncomplete = () => db.close();
+    tx.onabort = () => db.close();
+    tx.onerror = () => db.close();
+  });
+}
+
+async function cleanupStaleLocalMediaUploads(maxAgeMs = LOCAL_MEDIA_UPLOAD_MAX_AGE_MS) {
+  const cutoff = Date.now() - maxAgeMs;
+  const db = await openLocalMediaUploadDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(LOCAL_MEDIA_UPLOAD_STORE, "readwrite");
+    const store = tx.objectStore(LOCAL_MEDIA_UPLOAD_STORE);
+    const req = store.openCursor();
+
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) {
+        resolve();
+        return;
+      }
+
+      const value = cursor.value || {};
+      if (!value.createdAt || value.createdAt < cutoff) {
+        cursor.delete();
+      }
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error || new Error("Failed to clean local uploads"));
+    tx.oncomplete = () => db.close();
+    tx.onabort = () => db.close();
+    tx.onerror = () => db.close();
+  });
+}
+
+async function parseErrorResponse(res) {
+  const text = await res.text();
+  if (!text) {
+    return `HTTP ${res.status}`;
+  }
+
+  try {
+    const json = JSON.parse(text);
+    return json.detail || json.error || `HTTP ${res.status}`;
+  } catch {
+    return text;
+  }
 }
 
 async function fetchWithGrace(url, timeoutMs) {
@@ -171,6 +292,328 @@ async function resolveLocalMediaBases() {
   }
 
   return { processBase: LOCAL_MEDIA_API_BASE, finalBase };
+}
+
+function quickLinkStateBase(patch) {
+  return {
+    status: "pending",
+    sourceKind: "unknown",
+    sourceLabel: "",
+    error: "",
+    url: "",
+    endpoint: "",
+    jobKind: "",
+    jobId: "",
+    ...patch,
+    updatedAt: Date.now()
+  };
+}
+
+async function startLocalPathBuild(rawPath) {
+  const { processBase, finalBase } = await resolveLocalMediaBases();
+  const startRes = await fetch(`${processBase}/local-api/stream-local-path-build-start`, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ path: rawPath })
+  });
+
+  if (!startRes.ok) {
+    throw new Error(await parseErrorResponse(startRes));
+  }
+
+  const start = await startRes.json();
+  if (start.error) {
+    throw new Error(start.error);
+  }
+
+  if (start.ready && start.result_sid) {
+    return { ready: true, url: buildStreamUrl(finalBase, start.result_sid) };
+  }
+
+  return {
+    ready: false,
+    jobId: start.job_id,
+    state: start.state || "pending"
+  };
+}
+
+async function startLocalUploadBuild(uploadId, fileName, contentType) {
+  const upload = await getLocalMediaUpload(uploadId);
+  if (!upload || !upload.blob) {
+    throw new Error("Selected local file is no longer available");
+  }
+
+  try {
+    const { processBase, finalBase } = await resolveLocalMediaBases();
+    const params = new URLSearchParams({
+      filename: fileName || upload.filename || "upload.bin"
+    });
+    const effectiveContentType = contentType || upload.contentType || "";
+    if (effectiveContentType) {
+      params.set("content_type", effectiveContentType);
+    }
+
+    const startRes = await fetch(
+      `${processBase}/local-api/stream-local-upload-build-start?${params.toString()}`,
+      {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "Content-Type": effectiveContentType || "application/octet-stream"
+        },
+        body: upload.blob
+      }
+    );
+
+    if (!startRes.ok) {
+      throw new Error(await parseErrorResponse(startRes));
+    }
+
+    const start = await startRes.json();
+    if (start.error) {
+      throw new Error(start.error);
+    }
+
+    if (start.ready && start.result_sid) {
+      return { ready: true, url: buildStreamUrl(finalBase, start.result_sid) };
+    }
+
+    return {
+      ready: false,
+      jobId: start.job_id,
+      state: start.state || "pending"
+    };
+  } finally {
+    try {
+      await deleteLocalMediaUpload(uploadId);
+    } catch (e) {
+      console.log("[bg] deleteLocalMediaUpload error:", e && e.message);
+    }
+  }
+}
+
+async function pollLocalBuild(jobId) {
+  const { processBase, finalBase } = await resolveLocalMediaBases();
+  const pollRes = await fetch(
+    `${processBase}/local-api/stream-local-build-status?job_id=${encodeURIComponent(jobId)}`,
+    { cache: "no-store" }
+  );
+
+  if (!pollRes.ok) {
+    throw new Error(await parseErrorResponse(pollRes));
+  }
+
+  const status = await pollRes.json();
+  if (status.error) {
+    throw new Error(status.error);
+  }
+
+  if (status.ready && status.result_sid) {
+    return { ready: true, url: buildStreamUrl(finalBase, status.result_sid) };
+  }
+
+  return {
+    ready: false,
+    state: status.state || "pending"
+  };
+}
+
+async function buildSpotifyQuickLink(src) {
+  const bases = await resolveBases();
+  const base = (bases && (bases.resultBase || bases.fetchBase)) || "";
+  if (!base) {
+    throw new Error("No base URL");
+  }
+
+  return `${base.replace(/\/$/, "")}/api/stream-spotify?url=${encodeURIComponent(src)}`;
+}
+
+function buildManagedEndpointForSource(src) {
+  if (/^https?:\/\/t\.me\//.test(src)) {
+    return {
+      endpoint: "/api/stream-tg-media?url=" + encodeURIComponent(src),
+      sourceKind: "telegram",
+      sourceLabel: src
+    };
+  }
+  if (/soundcloud\.com|on\.soundcloud\.com/.test(src)) {
+    return {
+      endpoint: "/api/stream-sc?url=" + encodeURIComponent(src),
+      sourceKind: "soundcloud",
+      sourceLabel: src
+    };
+  }
+  if (/youtube\.com|youtu\.be/.test(src)) {
+    return {
+      endpoint: "/api/stream-yt?url=" + encodeURIComponent(src),
+      sourceKind: "youtube",
+      sourceLabel: src
+    };
+  }
+  return {
+    endpoint: "/api/stream-image?url=" + encodeURIComponent(src),
+    sourceKind: "image",
+    sourceLabel: src
+  };
+}
+
+async function startQuickLinkJob(msg) {
+  const src = String(msg.source || "").trim();
+  const sourceLabel = String(msg.sourceLabel || src || msg.fileName || "").trim();
+
+  if (msg.uploadId) {
+    await setQuickLinkJobState(quickLinkStateBase({
+      status: "starting",
+      sourceKind: "local-upload",
+      sourceLabel: sourceLabel || msg.fileName || "Local file"
+    }));
+
+    const start = await startLocalUploadBuild(msg.uploadId, msg.fileName, msg.contentType);
+    const state = start.ready
+      ? quickLinkStateBase({
+          status: "ready",
+          sourceKind: "local-upload",
+          sourceLabel: sourceLabel || msg.fileName || "Local file",
+          url: start.url
+        })
+      : quickLinkStateBase({
+          status: "pending",
+          sourceKind: "local-upload",
+          sourceLabel: sourceLabel || msg.fileName || "Local file",
+          jobKind: "local",
+          jobId: start.jobId
+        });
+    await setQuickLinkJobState(state);
+    return state;
+  }
+
+  if (!src) {
+    throw new Error("Missing source");
+  }
+
+  if (isProbablyLocalPath(src)) {
+    await setQuickLinkJobState(quickLinkStateBase({
+      status: "starting",
+      sourceKind: "local-path",
+      sourceLabel: sourceLabel || src
+    }));
+
+    const start = await startLocalPathBuild(src);
+    const state = start.ready
+      ? quickLinkStateBase({
+          status: "ready",
+          sourceKind: "local-path",
+          sourceLabel: sourceLabel || src,
+          url: start.url
+        })
+      : quickLinkStateBase({
+          status: "pending",
+          sourceKind: "local-path",
+          sourceLabel: sourceLabel || src,
+          jobKind: "local",
+          jobId: start.jobId
+        });
+    await setQuickLinkJobState(state);
+    return state;
+  }
+
+  if (/open\.spotify\.com\/track|spotify:track:/.test(src)) {
+    const link = await buildSpotifyQuickLink(src);
+    const state = quickLinkStateBase({
+      status: "ready",
+      sourceKind: "spotify",
+      sourceLabel: sourceLabel || src,
+      url: link
+    });
+    await setQuickLinkJobState(state);
+    return state;
+  }
+
+  const managed = buildManagedEndpointForSource(src);
+  await setQuickLinkJobState(quickLinkStateBase({
+    status: "starting",
+    sourceKind: managed.sourceKind,
+    sourceLabel: managed.sourceLabel,
+    endpoint: managed.endpoint
+  }));
+
+  const start = await startManagedBuild(managed.endpoint);
+  const state = start.url
+    ? quickLinkStateBase({
+        status: "ready",
+        sourceKind: managed.sourceKind,
+        sourceLabel: managed.sourceLabel,
+        endpoint: managed.endpoint,
+        url: start.url
+      })
+    : quickLinkStateBase({
+        status: "pending",
+        sourceKind: managed.sourceKind,
+        sourceLabel: managed.sourceLabel,
+        endpoint: managed.endpoint,
+        jobKind: "managed",
+        jobId: start.jobId
+      });
+  await setQuickLinkJobState(state);
+  return state;
+}
+
+async function getQuickLinkJobStatus() {
+  const job = await getQuickLinkJobState();
+  if (!job) {
+    return { status: "idle" };
+  }
+
+  if (job.status !== "pending") {
+    return job;
+  }
+
+  try {
+    if (job.jobKind === "managed" && job.endpoint && job.jobId) {
+      const result = await pollManagedBuild(job.endpoint, job.jobId);
+      if (result.url) {
+        const ready = quickLinkStateBase({
+          ...job,
+          status: "ready",
+          url: result.url,
+          error: ""
+        });
+        await setQuickLinkJobState(ready);
+        return ready;
+      }
+    } else if (job.jobKind === "local" && job.jobId) {
+      const result = await pollLocalBuild(job.jobId);
+      if (result.url) {
+        const ready = quickLinkStateBase({
+          ...job,
+          status: "ready",
+          url: result.url,
+          error: ""
+        });
+        await setQuickLinkJobState(ready);
+        return ready;
+      }
+    }
+  } catch (e) {
+    const failed = quickLinkStateBase({
+      ...job,
+      status: "error",
+      error: e && e.message ? e.message : String(e),
+      url: ""
+    });
+    await setQuickLinkJobState(failed);
+    return failed;
+  }
+
+  const pending = quickLinkStateBase({
+    ...job,
+    status: "pending"
+  });
+  await setQuickLinkJobState(pending);
+  return pending;
 }
 
 async function startBuildWithConfig(endpoint, startPath) {
@@ -345,6 +788,41 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
         console.log("[bg] refreshPublicUrl: detect failed");
       }
       sendResponse({ url });
+      return;
+    }
+
+    if (msg.action === "startQuickLinkJob") {
+      try {
+        const result = await startQuickLinkJob(msg);
+        sendResponse(result);
+      } catch (e) {
+        const failed = quickLinkStateBase({
+          status: "error",
+          sourceKind: msg.uploadId ? "local-upload" : "unknown",
+          sourceLabel: msg.sourceLabel || msg.source || msg.fileName || "",
+          error: e && e.message ? e.message : String(e)
+        });
+        await setQuickLinkJobState(failed);
+        console.log("[bg] startQuickLinkJob error:", e && e.message);
+        sendResponse(failed);
+      }
+      return;
+    }
+
+    if (msg.action === "getQuickLinkJobStatus") {
+      try {
+        const result = await getQuickLinkJobStatus();
+        sendResponse(result);
+      } catch (e) {
+        console.log("[bg] getQuickLinkJobStatus error:", e && e.message);
+        sendResponse({ status: "error", error: e && e.message ? e.message : String(e) });
+      }
+      return;
+    }
+
+    if (msg.action === "clearQuickLinkJob") {
+      await setQuickLinkJobState(null);
+      sendResponse({ ok: true });
       return;
     }
 

@@ -1,13 +1,18 @@
 document.addEventListener("DOMContentLoaded", () => {
   const $ = id => document.getElementById(id);
   const POPUP_STATE_KEY = "popupState";
-  const TELEGRAM_BUILD_POLL_MS = 2000;
-  const TELEGRAM_BUILD_MAX_WAIT_MS = 15 * 60 * 1000;
+  const QUICK_LINK_POLL_MS = 2000;
   const LOCAL_FILE_INPUT_PREFIX = "[Local file] ";
   const LOCAL_FILE_DROP_DEFAULT = "Drop a local image, video, or audio file here";
+  const LOCAL_MEDIA_UPLOAD_DB_NAME = "vrchat-local-media";
+  const LOCAL_MEDIA_UPLOAD_STORE = "uploads";
+  const LOCAL_MEDIA_UPLOAD_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
-  let selectedLocalFile = null;
+  let selectedLocalUploadId = "";
+  let selectedLocalFileName = "";
+  let selectedLocalFileContentType = "";
   let selectedLocalFileMarker = "";
+  let isPollingQuickLink = false;
 
   const input = $("input");
   const output = $("output");
@@ -60,33 +65,6 @@ document.addEventListener("DOMContentLoaded", () => {
     );
   }
 
-  function isProbablyLocalPath(value) {
-    const src = String(value || "").trim();
-    return (
-      /^[a-zA-Z]:[\\/]/.test(src) ||
-      /^\\\\/.test(src) ||
-      /^file:\/\//i.test(src)
-    );
-  }
-
-  function buildStreamUrl(base, sid) {
-    return `${String(base || "").replace(/\/$/, "")}/streams/${sid}/index.m3u8`;
-  }
-
-  async function parseErrorResponse(res) {
-    const text = await res.text();
-    if (!text) {
-      return `HTTP ${res.status}`;
-    }
-
-    try {
-      const json = JSON.parse(text);
-      return json.detail || json.error || `HTTP ${res.status}`;
-    } catch {
-      return text;
-    }
-  }
-
   function updateDropZone(text) {
     dropZone.textContent = text || LOCAL_FILE_DROP_DEFAULT;
   }
@@ -100,10 +78,91 @@ document.addEventListener("DOMContentLoaded", () => {
     spinner.style.display = "none";
   }
 
+  function showError(msg) {
+    globalError.textContent = msg;
+    globalError.style.display = "block";
+  }
+
+  function clearError() {
+    globalError.textContent = "";
+    globalError.style.display = "none";
+  }
+
+  function openLocalMediaUploadDb() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(LOCAL_MEDIA_UPLOAD_DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(LOCAL_MEDIA_UPLOAD_STORE)) {
+          db.createObjectStore(LOCAL_MEDIA_UPLOAD_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error("Failed to open local media DB"));
+    });
+  }
+
+  async function putLocalMediaUpload(uploadId, value) {
+    const db = await openLocalMediaUploadDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(LOCAL_MEDIA_UPLOAD_STORE, "readwrite");
+      const store = tx.objectStore(LOCAL_MEDIA_UPLOAD_STORE);
+      const req = store.put(value, uploadId);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error || new Error("Failed to store local upload"));
+      tx.oncomplete = () => db.close();
+      tx.onabort = () => db.close();
+      tx.onerror = () => db.close();
+    });
+  }
+
+  async function deleteLocalMediaUpload(uploadId) {
+    if (!uploadId) return;
+    const db = await openLocalMediaUploadDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(LOCAL_MEDIA_UPLOAD_STORE, "readwrite");
+      const store = tx.objectStore(LOCAL_MEDIA_UPLOAD_STORE);
+      const req = store.delete(uploadId);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error || new Error("Failed to delete local upload"));
+      tx.oncomplete = () => db.close();
+      tx.onabort = () => db.close();
+      tx.onerror = () => db.close();
+    });
+  }
+
+  async function cleanupStaleLocalMediaUploads(maxAgeMs = LOCAL_MEDIA_UPLOAD_MAX_AGE_MS) {
+    const cutoff = Date.now() - maxAgeMs;
+    const db = await openLocalMediaUploadDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(LOCAL_MEDIA_UPLOAD_STORE, "readwrite");
+      const store = tx.objectStore(LOCAL_MEDIA_UPLOAD_STORE);
+      const req = store.openCursor();
+
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) {
+          resolve();
+          return;
+        }
+
+        const value = cursor.value || {};
+        if (!value.createdAt || value.createdAt < cutoff) {
+          cursor.delete();
+        }
+        cursor.continue();
+      };
+      req.onerror = () => reject(req.error || new Error("Failed to clean local uploads"));
+      tx.oncomplete = () => db.close();
+      tx.onabort = () => db.close();
+      tx.onerror = () => db.close();
+    });
+  }
+
   async function savePopupState() {
     await chrome.storage.session.set({
       [POPUP_STATE_KEY]: {
-        input: selectedLocalFile ? "" : input.value,
+        input: selectedLocalUploadId ? "" : input.value,
         output: output.value,
       },
     });
@@ -124,24 +183,33 @@ document.addEventListener("DOMContentLoaded", () => {
     useLocalApiToggle.style.display = usePublic.checked ? "flex" : "none";
   }
 
-  function showError(msg) {
-    globalError.textContent = msg;
-    globalError.style.display = "block";
+  async function saveSettings(patch) {
+    await chrome.runtime.sendMessage({
+      action: "saveSettings",
+      data: patch
+    });
   }
 
-  function clearError() {
-    globalError.textContent = "";
-    globalError.style.display = "none";
-  }
+  async function clearSelectedLocalFile(resetInput = false, removeStoredUpload = true) {
+    const uploadId = selectedLocalUploadId;
 
-  async function clearSelectedLocalFile(resetInput = false) {
-    selectedLocalFile = null;
+    selectedLocalUploadId = "";
+    selectedLocalFileName = "";
+    selectedLocalFileContentType = "";
     selectedLocalFileMarker = "";
     localFilePicker.value = "";
     updateDropZone();
 
     if (resetInput && input.value.startsWith(LOCAL_FILE_INPUT_PREFIX)) {
       input.value = "";
+    }
+
+    if (removeStoredUpload && uploadId) {
+      try {
+        await deleteLocalMediaUpload(uploadId);
+      } catch (e) {
+        console.log("[popup] deleteLocalMediaUpload error:", e && e.message);
+      }
     }
   }
 
@@ -150,8 +218,23 @@ document.addEventListener("DOMContentLoaded", () => {
       throw new Error("Only local image, video, and audio files are supported");
     }
 
-    selectedLocalFile = file;
+    if (selectedLocalUploadId) {
+      await clearSelectedLocalFile(false, true);
+    }
+
+    const uploadId = crypto.randomUUID();
+    await putLocalMediaUpload(uploadId, {
+      blob: file,
+      filename: file.name,
+      contentType: file.type || "",
+      createdAt: Date.now()
+    });
+
+    selectedLocalUploadId = uploadId;
+    selectedLocalFileName = file.name;
+    selectedLocalFileContentType = file.type || "";
     selectedLocalFileMarker = selectedLocalFileLabel(file.name);
+
     input.value = selectedLocalFileMarker;
     output.value = "";
     status.textContent = `${file.name} selected`;
@@ -160,104 +243,124 @@ document.addEventListener("DOMContentLoaded", () => {
     await savePopupState();
   }
 
-  async function resolveLocalMediaBases() {
-    const result = await chrome.runtime.sendMessage({ action: "resolveLocalMediaBases" });
-    if (!result || result.error) {
-      throw new Error(result?.error || "Failed to resolve local media bases");
+  function applyJobLabel(job) {
+    if (!job || !job.sourceLabel) return;
+
+    if (job.sourceKind === "local-upload") {
+      input.value = selectedLocalFileLabel(job.sourceLabel);
+      return;
     }
-    return result;
+
+    if (!input.value || input.value.startsWith(LOCAL_FILE_INPUT_PREFIX)) {
+      input.value = job.sourceLabel;
+    }
   }
 
-  async function startLocalPathBuild(rawPath) {
-    const bases = await resolveLocalMediaBases();
-    const startRes = await fetch(`${bases.processBase}/local-api/stream-local-path-build-start`, {
-      method: "POST",
-      cache: "no-store",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ path: rawPath })
-    });
-
-    if (!startRes.ok) {
-      throw new Error(await parseErrorResponse(startRes));
+  function pendingStatusText(job) {
+    switch (job.sourceKind) {
+      case "telegram":
+        return "Preparing Telegram stream. Large videos can take a few minutes...";
+      case "local-upload":
+        return job.status === "starting"
+          ? "Uploading local file and preparing HLS stream..."
+          : "Preparing local media stream...";
+      case "local-path":
+        return job.status === "starting"
+          ? "Preparing local media from filesystem path..."
+          : "Preparing local media stream...";
+      case "youtube":
+      case "soundcloud":
+      case "image":
+        return "Waiting for server...";
+      default:
+        return "Waiting for server...";
     }
-
-    return {
-      bases,
-      start: await startRes.json()
-    };
   }
 
-  async function startLocalUploadBuild(file) {
-    const bases = await resolveLocalMediaBases();
-    const params = new URLSearchParams({
-      filename: file.name || "upload.bin"
-    });
-    if (file.type) {
-      params.set("content_type", file.type);
-    }
-
-    const startRes = await fetch(
-      `${bases.processBase}/local-api/stream-local-upload-build-start?${params.toString()}`,
-      {
-        method: "POST",
-        cache: "no-store",
-        headers: {
-          "Content-Type": file.type || "application/octet-stream"
-        },
-        body: file
+  async function copyResult(url) {
+    try {
+      await navigator.clipboard.writeText(url);
+      return true;
+    } catch {
+      try {
+        output.focus();
+        output.select();
+        document.execCommand("copy");
+        return true;
+      } catch {
+        return false;
       }
-    );
-
-    if (!startRes.ok) {
-      throw new Error(await parseErrorResponse(startRes));
     }
-
-    return {
-      bases,
-      start: await startRes.json()
-    };
   }
 
-  async function waitForLocalReady(startResult) {
-    const { bases, start } = startResult;
-
-    if (start.error) {
-      throw new Error(start.error);
+  async function applyQuickLinkState(job, autoCopy = true) {
+    if (!job || job.status === "idle") {
+      return false;
     }
 
-    if (start.ready && start.result_sid) {
-      return buildStreamUrl(bases.finalBase, start.result_sid);
+    applyJobLabel(job);
+
+    if (job.status === "starting" || job.status === "pending") {
+      showSpinner(pendingStatusText(job));
+      return false;
     }
 
-    if (!start.job_id) {
-      throw new Error("Local media build job was not created");
-    }
+    hideSpinner();
 
-    const deadline = Date.now() + TELEGRAM_BUILD_MAX_WAIT_MS;
-    while (Date.now() < deadline) {
-      await sleep(TELEGRAM_BUILD_POLL_MS);
-
-      const pollRes = await fetch(
-        `${bases.processBase}/local-api/stream-local-build-status?job_id=${encodeURIComponent(start.job_id)}`,
-        { cache: "no-store" }
-      );
-
-      if (!pollRes.ok) {
-        throw new Error(await parseErrorResponse(pollRes));
+    if (job.status === "ready" && job.url) {
+      output.value = job.url;
+      if (autoCopy) {
+        const copied = await copyResult(job.url);
+        status.textContent = copied ? "Ready & copied" : "Ready";
+      } else {
+        status.textContent = "Ready";
       }
-
-      const pollStatus = await pollRes.json();
-      if (pollStatus.error) {
-        throw new Error(pollStatus.error);
-      }
-      if (pollStatus.ready && pollStatus.result_sid) {
-        return buildStreamUrl(bases.finalBase, pollStatus.result_sid);
-      }
+      await savePopupState();
+      return true;
     }
 
-    throw new Error("Timed out waiting for the stream to be ready");
+    if (job.status === "error") {
+      status.textContent = "Error: " + (job.error || "Build failed");
+      return true;
+    }
+
+    return false;
+  }
+
+  async function pollQuickLinkUntilSettled() {
+    if (isPollingQuickLink) return;
+    isPollingQuickLink = true;
+
+    try {
+      while (true) {
+        const job = await chrome.runtime.sendMessage({ action: "getQuickLinkJobStatus" });
+        if (!job || job.status === "idle") {
+          hideSpinner();
+          return;
+        }
+
+        const done = await applyQuickLinkState(job, true);
+        if (done) {
+          return;
+        }
+
+        await sleep(QUICK_LINK_POLL_MS);
+      }
+    } finally {
+      isPollingQuickLink = false;
+    }
+  }
+
+  async function resumeQuickLinkJobIfNeeded() {
+    const job = await chrome.runtime.sendMessage({ action: "getQuickLinkJobStatus" });
+    if (!job || job.status === "idle") {
+      return;
+    }
+
+    const done = await applyQuickLinkState(job, job.status === "ready");
+    if (!done) {
+      await pollQuickLinkUntilSettled();
+    }
   }
 
   async function loadSettingsAndMaybeAutofill() {
@@ -299,13 +402,6 @@ document.addEventListener("DOMContentLoaded", () => {
     } finally {
       hideSpinner();
     }
-  }
-
-  async function saveSettings(patch) {
-    await chrome.runtime.sendMessage({
-      action: "saveSettings",
-      data: patch
-    });
   }
 
   usePublic.addEventListener("change", async () => {
@@ -407,105 +503,62 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   input.addEventListener("input", async () => {
-    if (selectedLocalFile && input.value !== selectedLocalFileMarker) {
-      await clearSelectedLocalFile(false);
+    if (selectedLocalUploadId && input.value !== selectedLocalFileMarker) {
+      await clearSelectedLocalFile(false, true);
     }
     output.value = "";
     await savePopupState();
   });
 
-  async function waitForManagedReady(endpoint) {
-    const start = await chrome.runtime.sendMessage({
-      action: "startManagedBuild",
-      endpoint
-    });
-
-    if (!start || start.error) {
-      throw new Error(start?.error || "Failed to start build");
-    }
-
-    if (start.url) {
-      return start.url;
-    }
-
-    if (!start.jobId) {
-      throw new Error("Telegram build job was not created");
-    }
-
-    const deadline = Date.now() + TELEGRAM_BUILD_MAX_WAIT_MS;
-    while (Date.now() < deadline) {
-      await sleep(TELEGRAM_BUILD_POLL_MS);
-
-      const statusResult = await chrome.runtime.sendMessage({
-        action: "pollManagedBuild",
-        endpoint,
-        jobId: start.jobId
-      });
-
-      if (!statusResult || statusResult.error) {
-        throw new Error(statusResult?.error || "Build failed");
-      }
-
-      if (statusResult.url) {
-        return statusResult.url;
-      }
-    }
-
-    throw new Error("Timed out waiting for the stream to be ready");
-  }
-
   getBtn.addEventListener("click", async () => {
     const src = input.value.trim();
-    if (!src && !selectedLocalFile) return;
+    if (!src && !selectedLocalUploadId) return;
 
-    showSpinner(selectedLocalFile ? "Uploading local file and preparing HLS stream..." : "Waiting for server...");
     clearError();
+    showSpinner("Waiting for server...");
 
     try {
-      let readyUrl;
+      let result;
 
-      if (selectedLocalFile) {
-        const localBuild = await startLocalUploadBuild(selectedLocalFile);
-        readyUrl = await waitForLocalReady(localBuild);
-      } else if (isProbablyLocalPath(src)) {
-        status.textContent = "Preparing local media from filesystem path...";
-        const localBuild = await startLocalPathBuild(src);
-        readyUrl = await waitForLocalReady(localBuild);
-      } else if (/^https?:\/\/t\.me\//.test(src)) {
-        status.textContent = "Preparing Telegram stream. Large videos can take a few minutes...";
-        const endpoint = "/api/stream-tg-media?url=" + encodeURIComponent(src);
-        readyUrl = await waitForManagedReady(endpoint);
-      } else if (/soundcloud\.com|on\.soundcloud\.com/.test(src)) {
-        const endpoint = "/api/stream-sc?url=" + encodeURIComponent(src);
-        readyUrl = await waitForManagedReady(endpoint);
-      } else if (/open\.spotify\.com\/track|spotify:track:/.test(src)) {
-        const bases = await chrome.runtime.sendMessage({ action: "resolveBases" });
-        const base = (bases && (bases.resultBase || bases.fetchBase)) || "";
-        if (!base) throw new Error("No base URL");
-
-        readyUrl =
-          `${base.replace(/\/$/, "")}/api/stream-spotify?url=` +
-          encodeURIComponent(src);
-      } else if (/youtube\.com|youtu\.be/.test(src)) {
-        const endpoint = "/api/stream-yt?url=" + encodeURIComponent(src);
-        readyUrl = await waitForManagedReady(endpoint);
+      if (selectedLocalUploadId) {
+        result = await chrome.runtime.sendMessage({
+          action: "startQuickLinkJob",
+          uploadId: selectedLocalUploadId,
+          fileName: selectedLocalFileName,
+          contentType: selectedLocalFileContentType,
+          sourceLabel: selectedLocalFileName
+        });
+        await clearSelectedLocalFile(false, false);
       } else {
-        const endpoint = "/api/stream-image?url=" + encodeURIComponent(src);
-        readyUrl = await waitForManagedReady(endpoint);
+        result = await chrome.runtime.sendMessage({
+          action: "startQuickLinkJob",
+          source: src,
+          sourceLabel: src
+        });
       }
 
-      output.value = readyUrl;
-      await navigator.clipboard.writeText(readyUrl);
-      status.textContent = "Ready & copied";
-      await clearSelectedLocalFile(false);
-      await savePopupState();
+      if (!result) {
+        throw new Error("Failed to start build");
+      }
+
+      const done = await applyQuickLinkState(result, true);
+      if (!done) {
+        await pollQuickLinkUntilSettled();
+      }
     } catch (e) {
-      status.textContent = "Error: " + e.message;
-    } finally {
       hideSpinner();
+      status.textContent = "Error: " + e.message;
     }
   });
 
   updateDropZone();
-  loadSettingsAndMaybeAutofill();
+
+  (async () => {
+    await cleanupStaleLocalMediaUploads();
+    await loadSettingsAndMaybeAutofill();
+    await resumeQuickLinkJobIfNeeded();
+  })().catch((e) => {
+    hideSpinner();
+    status.textContent = "Error: " + (e && e.message ? e.message : String(e));
+  });
 });

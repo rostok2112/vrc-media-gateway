@@ -16,7 +16,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import psutil
 import requests
 from fastapi import HTTPException
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.custom.message import Message
@@ -441,6 +441,196 @@ def audio_to_hls(
         "-hls_time", str(hls.get("hls_time", 4)),
         "-hls_list_size", str(hls.get("hls_list_size", 0)),
         "-hls_playlist_type", hls.get("hls_playlist_type", "vod"),
+        "-hls_base_url", f"/streams/{stream_id}/",
+        str(m3u8)
+    ]
+    run_cmd(cmd)
+
+
+def format_duration_label(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return ""
+    try:
+        total = max(0, int(round(float(seconds))))
+    except (TypeError, ValueError):
+        return ""
+
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def open_square_cover_image(path: Optional[Union[str, Path]], size: int) -> Optional[Image.Image]:
+    if not path:
+        return None
+    source = Path(path)
+    if not source.exists():
+        return None
+
+    try:
+        with Image.open(source) as im:
+            image = im.convert("RGB")
+            side = min(image.width, image.height)
+            left = max(0, (image.width - side) // 2)
+            top = max(0, (image.height - side) // 2)
+            image = image.crop((left, top, left + side, top + side))
+            return image.resize((size, size), Image.LANCZOS)
+    except Exception:
+        return None
+
+
+def wrap_text_for_pixel_width(text: str, font_size: int, max_width: int, max_lines: int) -> List[str]:
+    normalized = normalize_overlay_text(text)
+    if not normalized:
+        return []
+    approx_line_width = max(10, int(max_width / max(font_size * 0.56, 1.0)))
+    wrapped = wrap_overlay_text(normalized, line_width=approx_line_width)
+    if not wrapped:
+        return []
+    return wrapped.split("\n")[:max_lines]
+
+
+def render_audio_poster(
+    output_path: Path,
+    *,
+    title: str = "",
+    performer: str = "",
+    cover_image: Optional[Union[str, Path]] = None,
+    duration_seconds: Optional[float] = None,
+    width: int = 1280,
+    height: int = 720,
+    source_label: str = "Telegram audio",
+) -> Path:
+    width = max(320, int(width))
+    height = max(240, int(height))
+    background = Image.new("RGBA", (width, height), color=(10, 10, 10, 255))
+
+    cover_size = min(max(220, height - 180), max(220, width // 3))
+    cover = open_square_cover_image(cover_image, cover_size)
+    cover_x = max(56, width // 16)
+    cover_y = max(40, (height - cover_size) // 2)
+
+    if cover is not None:
+        blurred = cover.resize((width, height), Image.LANCZOS).filter(ImageFilter.GaussianBlur(28)).convert("RGBA")
+        background = blurred
+        overlay = Image.new("RGBA", (width, height), (0, 0, 0, 185))
+        background = Image.alpha_composite(background, overlay)
+
+        shadow = Image.new("RGBA", (cover_size + 24, cover_size + 24), (0, 0, 0, 0))
+        shadow_draw = ImageDraw.Draw(shadow)
+        shadow_draw.rounded_rectangle((12, 12, cover_size + 12, cover_size + 12), radius=26, fill=(0, 0, 0, 150))
+        background.alpha_composite(shadow, (cover_x - 12, cover_y - 12))
+
+        cover_mask = Image.new("L", (cover_size, cover_size), 0)
+        ImageDraw.Draw(cover_mask).rounded_rectangle((0, 0, cover_size, cover_size), radius=22, fill=255)
+        background.paste(cover, (cover_x, cover_y), cover_mask)
+    else:
+        cover_x = max(56, width // 14)
+        cover_size = 0
+
+    draw = ImageDraw.Draw(background)
+    font_path = str(overlay_font_path())
+    label_font = ImageFont.truetype(font_path, max(18, min(26, width // 50)))
+    title_font = ImageFont.truetype(font_path, max(34, min(60, width // 24)))
+    performer_font = ImageFont.truetype(font_path, max(24, min(38, width // 36)))
+    meta_font = ImageFont.truetype(font_path, max(18, min(26, width // 52)))
+
+    text_x = cover_x + cover_size + 72 if cover_size else max(80, width // 10)
+    text_max_width = width - text_x - max(64, width // 14)
+    top_y = cover_y + 10 if cover_size else max(90, height // 6)
+
+    label_text = normalize_overlay_text(source_label) or "Telegram audio"
+    duration_label = format_duration_label(duration_seconds)
+    if duration_label:
+        label_text = f"{label_text}  {duration_label}"
+    draw.text((text_x, top_y), label_text, font=label_font, fill=(200, 200, 200))
+
+    title_value = normalize_overlay_text(title) or "Telegram audio"
+    performer_value = normalize_overlay_text(performer)
+
+    title_lines = wrap_text_for_pixel_width(title_value, title_font.size, text_max_width, 3)
+    performer_lines = wrap_text_for_pixel_width(performer_value, performer_font.size, text_max_width, 2)
+
+    cursor_y = top_y + label_font.size + 26
+    for line in title_lines:
+        if not line:
+            continue
+        draw.text((text_x, cursor_y), line, font=title_font, fill="white")
+        bbox = draw.textbbox((text_x, cursor_y), line, font=title_font)
+        cursor_y = bbox[3] + 10
+
+    for line in performer_lines:
+        if not line:
+            continue
+        draw.text((text_x, cursor_y), line, font=performer_font, fill=(222, 222, 222))
+        bbox = draw.textbbox((text_x, cursor_y), line, font=performer_font)
+        cursor_y = bbox[3] + 8
+
+    if cover_size:
+        accent_y = cover_y + cover_size + 28
+        accent_w = min(width - cover_x - 80, cover_size + 160)
+        draw.rounded_rectangle(
+            (cover_x, accent_y, cover_x + accent_w, accent_y + 8),
+            radius=4,
+            fill=(235, 235, 235),
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    background.convert("RGB").save(output_path)
+    return output_path
+
+
+def audio_to_hls_with_poster(
+    audio: Path,
+    out_dir: Path,
+    stream_id: str,
+    *,
+    title: str = "",
+    performer: str = "",
+    cover_image: Optional[Union[str, Path]] = None,
+    duration_seconds: Optional[float] = None,
+    width: int = 1280,
+    height: int = 720,
+    source_label: str = "Telegram audio",
+    segment_time: Optional[int] = None,
+):
+    m3u8 = out_dir / "index.m3u8"
+    poster = out_dir / "audio_poster.png"
+    render_audio_poster(
+        poster,
+        title=title,
+        performer=performer,
+        cover_image=cover_image,
+        duration_seconds=duration_seconds,
+        width=width,
+        height=height,
+        source_label=source_label,
+    )
+
+    hls = hls_opts_with_segment_time(segment_time)
+    cmd = [
+        config.FFMPEG, "-y",
+        "-loop", "1",
+        "-i", str(poster),
+        "-i", str(audio),
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-vf", "setsar=1",
+        "-pix_fmt", "yuv420p",
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "16",
+        "-profile:v", "high",
+        "-level", "4.2",
+        *ffmpeg_audio_params(),
+        "-shortest",
+        "-f", "hls",
+        "-hls_time", str(hls.get("hls_time", 4)),
+        "-hls_list_size", str(hls.get("hls_list_size", 0)),
+        "-hls_playlist_type", hls.get("hls_playlist_type", "vod"),
+        "-hls_flags", hls.get("hls_flags", "independent_segments"),
         "-hls_base_url", f"/streams/{stream_id}/",
         str(m3u8)
     ]

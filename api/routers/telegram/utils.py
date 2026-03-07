@@ -404,6 +404,75 @@ async def download_tg_audio(url: str) -> Path:
     return out
 
 
+async def download_tg_audio_cover(url: str) -> Optional[Path]:
+    client = await get_tg_client()
+    msg = await get_tg_message(url)
+
+    if classify_tg_message(msg) != "audio":
+        return None
+
+    document = getattr(msg, "document", None)
+    thumbs = list(getattr(document, "thumbs", None) or [])
+    if not document or not thumbs:
+        return None
+
+    out_dir = Path(config.OUTPUT) / "_tg_audio_covers"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{document.id}.jpg"
+
+    if out.exists() and out.stat().st_size > 0:
+        return out
+
+    try:
+        await client.download_media(msg, file=str(out), thumb=-1)
+    except Exception:
+        return None
+
+    if out.exists() and out.stat().st_size > 0:
+        return out
+    return None
+
+
+async def get_tg_audio_metadata(url: str) -> Dict[str, Any]:
+    msg = await get_tg_message(url)
+
+    if classify_tg_message(msg) != "audio":
+        raise RuntimeError("Media is not an audio track")
+
+    file = getattr(msg, "file", None)
+    file_name = getattr(file, "name", None) or ""
+    duration = int(getattr(file, "duration", 0) or 0)
+    title = ""
+    performer = ""
+    is_voice = bool(getattr(msg, "voice", None))
+
+    document = getattr(msg, "document", None)
+    for attr in getattr(document, "attributes", []) or []:
+        if isinstance(attr, DocumentAttributeAudio):
+            title = str(getattr(attr, "title", None) or title or "").strip()
+            performer = str(getattr(attr, "performer", None) or performer or "").strip()
+            duration = int(getattr(attr, "duration", None) or duration or 0)
+            is_voice = bool(getattr(attr, "voice", False)) or is_voice
+
+    if not title:
+        if file_name:
+            title = Path(file_name).stem
+        elif is_voice:
+            title = "Voice message"
+        else:
+            title = "Telegram audio"
+
+    cover_path = await download_tg_audio_cover(url)
+    return {
+        "title": title,
+        "performer": performer,
+        "duration": duration,
+        "file_name": file_name,
+        "is_voice": is_voice,
+        "cover_path": str(cover_path) if cover_path else "",
+    }
+
+
 def _parse_tg_post(url: str) -> Tuple[Union[str, PeerChannel], int]:
     """
     Robust parser for Telegram post URLs.

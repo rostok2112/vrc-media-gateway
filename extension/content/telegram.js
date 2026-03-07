@@ -381,8 +381,9 @@
     try {
       const info = await resolveContextPostInfo();
       if (info) {
-        hasMedia = Boolean(info.media_kind);
-        hasText = Boolean(info.has_text || info.post_text);
+        const mediaKind = String(info.media_kind || "").toLowerCase();
+        hasMedia = Boolean(mediaKind);
+        hasText = Boolean(info.has_text || info.post_text) && mediaKind !== "audio";
       }
     } catch (e) {
       console.log("[VRChat TG] post-info inspect failed:", e && e.message);

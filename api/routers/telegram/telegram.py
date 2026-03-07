@@ -58,6 +58,10 @@ def _tg_video_sid(url: str, segment_time: Optional[int] = None) -> str:
     return utils.video_stream_sid(url, "telegram", segment_time=segment_time)
 
 
+def _tg_audio_sid(url: str, segment_time: Optional[int] = None) -> str:
+    return utils.audio_stream_sid(url, "telegram", segment_time=segment_time)
+
+
 def _tg_video_text_sid(
     url: str,
     text: str,
@@ -135,6 +139,8 @@ def _tg_build_job_id(
         )
     if media_kind == "video":
         return utils.video_build_job_id(url, "tg-build", "telegram", segment_time=segment_time)
+    if media_kind == "audio":
+        return utils.audio_build_job_id(url, "tg-build", "telegram", segment_time=segment_time)
     return utils.image_build_job_id(
         url,
         duration,
@@ -250,6 +256,28 @@ async def _ensure_tg_video_stream(
     return sid
 
 
+async def _ensure_tg_audio_stream(
+    url: str,
+    segment_time: Optional[int] = None,
+) -> str:
+    url = _normalize_tg_url(url)
+    segment_time = utils.normalize_hls_segment_time(segment_time)
+    sid = _tg_audio_sid(url, segment_time)
+    out_dir = config.STREAMS / sid
+
+    if _is_hls_ready(sid):
+        return sid
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    audio = await telegram_utils.download_tg_audio(url)
+    await asyncio.to_thread(utils.audio_to_hls, audio, out_dir, sid, segment_time)
+
+    if not _is_hls_ready(sid):
+        raise HTTPException(status_code=500, detail="telegram audio HLS build failed")
+
+    return sid
+
+
 async def _ensure_tg_image_stream(
     url: str,
     duration: int,
@@ -274,6 +302,9 @@ async def _ensure_tg_image_stream(
     if media_kind == "video":
         print("Telegram post is a video, routing image endpoint to video pipeline")
         return await _ensure_tg_video_stream(url, segment_time, width, height, caption_text)
+    if media_kind == "audio":
+        print("Telegram post is an audio track, routing image endpoint to audio pipeline")
+        return await _ensure_tg_audio_stream(url, segment_time)
 
     sid = (
         _tg_image_text_sid(url, caption_text, duration, width, height, segment_time)
@@ -393,6 +424,8 @@ async def _run_tg_build_job(
     try:
         if media_kind == "video":
             result_sid = await _ensure_tg_video_stream(url, segment_time, width, height, caption_text)
+        elif media_kind == "audio":
+            result_sid = await _ensure_tg_audio_stream(url, segment_time)
         else:
             result_sid = await _ensure_tg_image_stream(
                 url,
@@ -459,6 +492,13 @@ async def _ensure_tg_build_job(
                 if caption_value
                 else _tg_video_sid(url, segment_time)
             )
+            if _is_hls_ready(sid):
+                job["state"] = "ready"
+                job["result_sid"] = sid
+                job["error"] = None
+                return _job_snapshot(job_id)
+        elif media_kind == "audio":
+            sid = _tg_audio_sid(url, segment_time)
             if _is_hls_ready(sid):
                 job["state"] = "ready"
                 job["result_sid"] = sid
@@ -565,6 +605,14 @@ async def _stream_tg_video_impl(
     return _hls_response(sid)
 
 
+async def _stream_tg_audio_impl(
+    url: str,
+    segment_time: Optional[int] = None,
+) -> Response:
+    sid = await _ensure_tg_audio_stream(url, segment_time)
+    return _hls_response(sid)
+
+
 async def _stream_tg_image_impl(
     url: str,
     duration: int,
@@ -604,6 +652,8 @@ async def stream_tg_media(
     caption_text = await _resolve_post_text(url, with_text)
     if media_kind == "video":
         return await _stream_tg_video_impl(url, segment_time, width, height, caption_text)
+    if media_kind == "audio":
+        return await _stream_tg_audio_impl(url, segment_time)
 
     return await _stream_tg_image_impl(
         url,
@@ -646,6 +696,14 @@ async def stream_tg_video(
 ):
     caption_text = await _resolve_post_text(url, with_text)
     return await _stream_tg_video_impl(url, segment_time, width, height, caption_text)
+
+
+@router.get("/stream-tg-audio")
+async def stream_tg_audio(
+    url: str = Query(...),
+    segment_time: int | None = Query(default=None, ge=1),
+):
+    return await _stream_tg_audio_impl(url, segment_time)
 
 
 @router.get("/resolve-tg-public-link")

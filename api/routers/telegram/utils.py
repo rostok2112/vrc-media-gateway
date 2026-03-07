@@ -10,6 +10,7 @@ from telethon.sessions import StringSession
 from telethon.tl.custom.message import Message
 from telethon.tl.types import (
     DocumentAttributeAnimated,
+    DocumentAttributeAudio,
     DocumentAttributeFilename,
     DocumentAttributeSticker,
     DocumentAttributeVideo,
@@ -106,6 +107,9 @@ def classify_tg_message(msg: Optional[Message]) -> Optional[str]:
     if getattr(msg, "video", None):
         return "video"
 
+    if getattr(msg, "audio", None) or getattr(msg, "voice", None):
+        return "audio"
+
     file = getattr(msg, "file", None)
     mime = getattr(file, "mime_type", None) or ""
     if getattr(msg, "sticker", None):
@@ -119,6 +123,8 @@ def classify_tg_message(msg: Optional[Message]) -> Optional[str]:
         return "video"
     if mime.startswith("video/"):
         return "video"
+    if mime.startswith("audio/"):
+        return "audio"
 
     document = getattr(msg, "document", None)
     attributes = getattr(document, "attributes", []) or []
@@ -126,6 +132,8 @@ def classify_tg_message(msg: Optional[Message]) -> Optional[str]:
         if any(isinstance(attr, (DocumentAttributeAnimated, DocumentAttributeVideo)) for attr in attributes):
             return "video"
         return "image"
+    if any(isinstance(attr, DocumentAttributeAudio) for attr in attributes):
+        return "audio"
     if any(isinstance(attr, DocumentAttributeAnimated) for attr in attributes):
         return "video"
     if any(isinstance(attr, DocumentAttributeVideo) for attr in attributes):
@@ -352,6 +360,36 @@ async def download_tg_image(url: str) -> Path:
     if not suffix:
         mime = getattr(getattr(msg, "file", None), "mime_type", None) or ""
         suffix = (mimetypes.guess_extension(mime.split(";")[0].strip()) if mime else "") or ".webp"
+
+    out = Path(config.OUTPUT) / f"{getattr(channel_entity, 'channel_id', str(channel_entity))}_{msg_id}{suffix}"
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    expected_size = getattr(getattr(msg, "file", None), "size", None)
+    if out.exists() and out.stat().st_size > 0:
+        if expected_size is None or out.stat().st_size == expected_size:
+            return out
+
+    await client.download_media(msg, file=str(out))
+    utils.ensure_file(out)
+    return out
+
+
+async def download_tg_audio(url: str) -> Path:
+    channel_entity, msg_id = _parse_tg_post(url)
+    client = await get_tg_client()
+    msg = await get_tg_message(url)
+
+    if not getattr(msg, "file", None):
+        raise RuntimeError("No media in Telegram post")
+
+    if classify_tg_message(msg) != "audio":
+        raise RuntimeError("Media is not an audio track")
+
+    file_name = getattr(getattr(msg, "file", None), "name", "") or ""
+    suffix = Path(file_name).suffix.lower() if file_name else ""
+    if not suffix:
+        mime = getattr(getattr(msg, "file", None), "mime_type", None) or ""
+        suffix = (mimetypes.guess_extension(mime.split(";")[0].strip()) if mime else "") or ".m4a"
 
     out = Path(config.OUTPUT) / f"{getattr(channel_entity, 'channel_id', str(channel_entity))}_{msg_id}{suffix}"
     out.parent.mkdir(parents=True, exist_ok=True)

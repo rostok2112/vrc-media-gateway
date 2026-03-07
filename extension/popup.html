@@ -54,6 +54,16 @@
 
   button { cursor: pointer; }
 
+  .danger-button {
+    background: #a52828;
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.16);
+  }
+
+  .danger-button:hover {
+    background: #be3030;
+  }
+
   .row {
     display: flex;
     gap: 8px;
@@ -167,6 +177,7 @@
   <input id="globalUrl" placeholder="https://xxxx.trycloudflare.com">
   <div id="globalError" class="error"></div>
   <button id="refreshPublic">Refresh public URL</button>
+  <button id="clearAllCache" type="button" class="danger-button">Clear all cache</button>
 
 </div>
 

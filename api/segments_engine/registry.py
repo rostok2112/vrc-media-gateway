@@ -129,6 +129,18 @@ async def stop_stream(sid: str):
         except KeyError:
             pass
 
+
+async def stop_all_streams():
+    async with _lock:
+        items = list(_writers.items())
+        _writers.clear()
+
+    for _, writer in items:
+        try:
+            await writer.stop()
+        except Exception:
+            pass
+
 async def prefetch_gate(sid: str, timeout=0.5):
 
     w = await get_or_create_writer(sid)

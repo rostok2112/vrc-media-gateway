@@ -33,6 +33,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const localPort = $("localPort");
   const globalUrl = $("globalUrl");
   const refreshPublic = $("refreshPublic");
+  const clearAllCacheBtn = $("clearAllCache");
 
   const globalError = $("globalError");
 
@@ -443,6 +444,32 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch {
       showError("Failed to detect public URL");
       status.textContent = "";
+    } finally {
+      hideSpinner();
+    }
+  });
+
+  clearAllCacheBtn.addEventListener("click", async () => {
+    if (!confirm("Clear all generated streams and temporary cached media files?")) {
+      return;
+    }
+
+    clearError();
+    showSpinner("Clearing all cache...");
+
+    try {
+      const result = await chrome.runtime.sendMessage({ action: "clearAllCache" });
+      if (!result || !result.ok) {
+        throw new Error(result?.error || "Failed to clear cache");
+      }
+
+      await clearSelectedLocalFile(true, false);
+      output.value = "";
+      await chrome.storage.session.remove(POPUP_STATE_KEY);
+      await savePopupState();
+      status.textContent = "All cache cleared";
+    } catch (e) {
+      status.textContent = "Error: " + e.message;
     } finally {
       hideSpinner();
     }

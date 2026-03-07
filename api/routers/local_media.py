@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import mimetypes
 import os
+import shutil
 import subprocess
 import uuid
 from pathlib import Path
@@ -12,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from api import config, utils
+from api.segments_engine import registry
 
 
 router = APIRouter()
@@ -34,6 +36,7 @@ AUDIO_SUFFIXES = {
 _LOCAL_MEDIA_BUILD_JOBS: Dict[str, Dict[str, Any]] = {}
 _LOCAL_MEDIA_BUILD_TASKS: Dict[str, asyncio.Task] = {}
 _LOCAL_MEDIA_BUILD_LOCK = asyncio.Lock()
+PRESERVED_CACHE_NAMES = {".gitkeep", ".gitignore"}
 
 
 class LocalPathBuildRequest(BaseModel):
@@ -41,6 +44,20 @@ class LocalPathBuildRequest(BaseModel):
     duration: int = Field(default=300, ge=1, le=86400)
     width: int = Field(default=1280, ge=1, le=7680)
     height: int = Field(default=720, ge=1, le=4320)
+
+
+async def clear_local_media_build_jobs() -> None:
+    async with _LOCAL_MEDIA_BUILD_LOCK:
+        tasks = list(_LOCAL_MEDIA_BUILD_TASKS.values())
+        _LOCAL_MEDIA_BUILD_TASKS.clear()
+        _LOCAL_MEDIA_BUILD_JOBS.clear()
+
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _stream_path_for_sid(sid: str) -> str:
@@ -51,6 +68,23 @@ def _ensure_loopback_request(request: Request) -> None:
     client_host = (request.client.host if request.client else "") or ""
     if client_host not in {"127.0.0.1", "::1"}:
         raise HTTPException(status_code=403, detail="local media routes are loopback-only")
+
+
+def _remove_dir_contents(path: Path) -> int:
+    path.mkdir(parents=True, exist_ok=True)
+    removed = 0
+
+    for child in path.iterdir():
+        if child.name in PRESERVED_CACHE_NAMES:
+            continue
+
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child, ignore_errors=False)
+        else:
+            child.unlink(missing_ok=True)
+        removed += 1
+
+    return removed
 
 
 def _is_hls_ready(sid: str) -> bool:
@@ -426,3 +460,33 @@ async def stream_local_build_status(request: Request, job_id: str = Query(...)):
     if not snapshot:
         raise HTTPException(status_code=404, detail="local media build job not found")
     return snapshot
+
+
+@router.post("/clear-cache-all")
+async def clear_cache_all(request: Request):
+    _ensure_loopback_request(request)
+
+    from api.routers import img, sc, yt
+    from api.routers.telegram import telegram as telegram_router
+
+    await registry.stop_all_streams()
+    await asyncio.gather(
+        img.clear_img_build_jobs(),
+        sc.clear_sc_build_jobs(),
+        yt.clear_yt_build_jobs(),
+        telegram_router.clear_tg_build_jobs(),
+        clear_local_media_build_jobs(),
+        return_exceptions=True,
+    )
+
+    try:
+        removed_stream_entries = _remove_dir_contents(config.STREAMS)
+        removed_output_entries = _remove_dir_contents(config.OUTPUT)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"cache remove failed: {e}")
+
+    return {
+        "ok": True,
+        "removed_stream_entries": removed_stream_entries,
+        "removed_output_entries": removed_output_entries,
+    }

@@ -15,6 +15,20 @@ _SC_BUILD_TASKS: Dict[str, asyncio.Task] = {}
 _SC_BUILD_LOCK = asyncio.Lock()
 
 
+async def clear_sc_build_jobs() -> None:
+    async with _SC_BUILD_LOCK:
+        tasks = list(_SC_BUILD_TASKS.values())
+        _SC_BUILD_TASKS.clear()
+        _SC_BUILD_JOBS.clear()
+
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 def _sc_sid(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()
 

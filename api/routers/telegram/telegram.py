@@ -14,6 +14,20 @@ _TG_BUILD_TASKS: Dict[str, asyncio.Task] = {}
 _TG_BUILD_LOCK = asyncio.Lock()
 
 
+async def clear_tg_build_jobs() -> None:
+    async with _TG_BUILD_LOCK:
+        tasks = list(_TG_BUILD_TASKS.values())
+        _TG_BUILD_TASKS.clear()
+        _TG_BUILD_JOBS.clear()
+
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 def _normalize_tg_url(url: str) -> str:
     if url.startswith("//"):
         url = "https:" + url

@@ -56,6 +56,7 @@ const TELEGRAM_BUILD_MAX_WAIT_MS = 15 * 60 * 1000;
 const RETRYABLE_BUILD_STATUSES = new Set([408, 429, 502, 503, 504, 522, 523, 524]);
 const LOCAL_MEDIA_API_BASE = "http://127.0.0.1:5000";
 const QUICK_LINK_JOB_KEY = "activeQuickLinkJob";
+const POPUP_STATE_KEY = "popupState";
 const LOCAL_MEDIA_UPLOAD_DB_NAME = "vrchat-local-media";
 const LOCAL_MEDIA_UPLOAD_STORE = "uploads";
 const LOCAL_MEDIA_UPLOAD_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -217,6 +218,20 @@ async function cleanupStaleLocalMediaUploads(maxAgeMs = LOCAL_MEDIA_UPLOAD_MAX_A
   });
 }
 
+async function clearLocalMediaUploads() {
+  const db = await openLocalMediaUploadDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(LOCAL_MEDIA_UPLOAD_STORE, "readwrite");
+    const store = tx.objectStore(LOCAL_MEDIA_UPLOAD_STORE);
+    const req = store.clear();
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error || new Error("Failed to clear local uploads"));
+    tx.oncomplete = () => db.close();
+    tx.onabort = () => db.close();
+    tx.onerror = () => db.close();
+  });
+}
+
 async function parseErrorResponse(res) {
   const text = await res.text();
   if (!text) {
@@ -292,6 +307,40 @@ async function resolveLocalMediaBases() {
   }
 
   return { processBase: LOCAL_MEDIA_API_BASE, finalBase };
+}
+
+async function clearAllCache() {
+  const { processBase } = await resolveLocalMediaBases();
+  const res = await fetch(`${processBase}/local-api/clear-cache-all`, {
+    method: "POST",
+    cache: "no-store"
+  });
+
+  if (!res.ok) {
+    throw new Error(await parseErrorResponse(res));
+  }
+
+  const payload = await res.json();
+
+  try {
+    await clearLocalMediaUploads();
+  } catch (e) {
+    console.log("[bg] clearLocalMediaUploads error:", e && e.message);
+  }
+
+  try {
+    await setQuickLinkJobState(null);
+  } catch (e) {
+    console.log("[bg] clear quick-link state error:", e && e.message);
+  }
+
+  try {
+    await chrome.storage.session.remove(POPUP_STATE_KEY);
+  } catch (e) {
+    console.log("[bg] clear popup state error:", e && e.message);
+  }
+
+  return payload;
 }
 
 function quickLinkStateBase(patch) {
@@ -823,6 +872,17 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
     if (msg.action === "clearQuickLinkJob") {
       await setQuickLinkJobState(null);
       sendResponse({ ok: true });
+      return;
+    }
+
+    if (msg.action === "clearAllCache") {
+      try {
+        const result = await clearAllCache();
+        sendResponse({ ok: true, ...result });
+      } catch (e) {
+        console.log("[bg] clearAllCache error:", e && e.message);
+        sendResponse({ ok: false, error: e && e.message ? e.message : String(e) });
+      }
       return;
     }
 

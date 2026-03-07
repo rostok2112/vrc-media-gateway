@@ -18,6 +18,20 @@ _YT_BUILD_TASKS: Dict[str, asyncio.Task] = {}
 _YT_BUILD_LOCK = asyncio.Lock()
 
 
+async def clear_yt_build_jobs() -> None:
+    async with _YT_BUILD_LOCK:
+        tasks = list(_YT_BUILD_TASKS.values())
+        _YT_BUILD_TASKS.clear()
+        _YT_BUILD_JOBS.clear()
+
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 def normalize_yt_url(url: str) -> str:
     p = urlparse.urlparse(url)
     if p.netloc.endswith("youtu.be"):

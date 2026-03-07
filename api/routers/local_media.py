@@ -222,6 +222,8 @@ def _local_media_sid(
     parts = [LOCAL_MEDIA_BUILD_VERSION, media_kind, utils.hls_segment_cache_part(segment_time)]
     if media_kind == "video":
         parts.append(utils.VIDEO_HLS_LAYOUT_VERSION)
+    if media_kind == "audio":
+        parts.append(utils.AUDIO_HLS_LAYOUT_VERSION)
     if media_kind == "image":
         parts.append(f"{duration}")
         parts.append(f"{width}x{height}")
@@ -239,6 +241,8 @@ def _local_media_job_id(
     parts = ["local-media-build", LOCAL_MEDIA_BUILD_VERSION, media_kind, utils.hls_segment_cache_part(segment_time)]
     if media_kind == "video":
         parts.append(utils.VIDEO_HLS_LAYOUT_VERSION)
+    if media_kind == "audio":
+        parts.append(utils.AUDIO_HLS_LAYOUT_VERSION)
     if media_kind == "image":
         parts.append(f"{duration}")
         parts.append(f"{width}x{height}")

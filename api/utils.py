@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 IMAGE_EXPORT_LAYOUT_VERSION = "fit-pad-v1"
 VIDEO_HLS_LAYOUT_VERSION = "video-h264-v2"
+AUDIO_HLS_LAYOUT_VERSION = "audio-hls-v2"
 GIF_EXPORT_LAYOUT_VERSION = "gif-motion-v1"
 POST_TEXT_EXPORT_LAYOUT_VERSION = "post-text-v7"
 DEFAULT_HLS_SEGMENT_TIME = int(config.HLS_OPTS.get("hls_time", 4))
@@ -261,7 +262,7 @@ def ffmpeg_audio_params() -> List[str]:
     if int(at.get("channels", 2)) == 2:
         args += [
             "-af",
-            "pan=stereo|FL<FL+0.0*FC+0.6*BL|FR<FR+0.0*FC+0.6*BR"
+            "pan=stereo|FL<FL+0.707*FC+0.5*BL+0.5*SL+0.5*LFE|FR<FR+0.707*FC+0.5*BR+0.5*SR+0.5*LFE"
         ]
     return args
 
@@ -1235,11 +1236,11 @@ def image_build_job_id(
 
 
 def audio_stream_sid(url: str, *extra_parts, segment_time: Optional[int] = None) -> str:
-    return sid_for_url(url, hls_segment_cache_part(segment_time), *extra_parts)
+    return sid_for_url(url, AUDIO_HLS_LAYOUT_VERSION, hls_segment_cache_part(segment_time), *extra_parts)
 
 
 def audio_build_job_id(url: str, scope: str = "audio-build", *extra_parts, segment_time: Optional[int] = None) -> str:
-    return sid_for_url(url, scope, hls_segment_cache_part(segment_time), *extra_parts)
+    return sid_for_url(url, scope, AUDIO_HLS_LAYOUT_VERSION, hls_segment_cache_part(segment_time), *extra_parts)
 
 
 def video_stream_sid(url: str, *extra_parts, segment_time: Optional[int] = None) -> str:

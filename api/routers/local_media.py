@@ -211,8 +211,15 @@ def _normalize_local_path(raw_path: str) -> Path:
     return resolved
 
 
-def _local_media_sid(source_key: str, media_kind: str, duration: int, width: int, height: int) -> str:
-    parts = [LOCAL_MEDIA_BUILD_VERSION, media_kind]
+def _local_media_sid(
+    source_key: str,
+    media_kind: str,
+    duration: int,
+    width: int,
+    height: int,
+    segment_time: Optional[int] = None,
+) -> str:
+    parts = [LOCAL_MEDIA_BUILD_VERSION, media_kind, utils.hls_segment_cache_part(segment_time)]
     if media_kind == "video":
         parts.append(utils.VIDEO_HLS_LAYOUT_VERSION)
     if media_kind == "image":
@@ -221,8 +228,15 @@ def _local_media_sid(source_key: str, media_kind: str, duration: int, width: int
     return utils.sid_for_url(source_key, *parts)
 
 
-def _local_media_job_id(source_key: str, media_kind: str, duration: int, width: int, height: int) -> str:
-    parts = ["local-media-build", LOCAL_MEDIA_BUILD_VERSION, media_kind]
+def _local_media_job_id(
+    source_key: str,
+    media_kind: str,
+    duration: int,
+    width: int,
+    height: int,
+    segment_time: Optional[int] = None,
+) -> str:
+    parts = ["local-media-build", LOCAL_MEDIA_BUILD_VERSION, media_kind, utils.hls_segment_cache_part(segment_time)]
     if media_kind == "video":
         parts.append(utils.VIDEO_HLS_LAYOUT_VERSION)
     if media_kind == "image":
@@ -243,16 +257,17 @@ def _build_local_media_sync(
     duration: int,
     width: int,
     height: int,
+    segment_time: Optional[int] = None,
 ) -> None:
     out_dir = config.STREAMS / sid
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if media_kind == "image":
-        utils.build_hls_from_image(str(source_path), sid, duration, width, height)
+        utils.build_hls_from_image(str(source_path), sid, duration, width, height, segment_time)
     elif media_kind == "audio":
-        utils.audio_to_hls(source_path, out_dir, sid)
+        utils.audio_to_hls(source_path, out_dir, sid, segment_time=segment_time)
     elif media_kind == "video":
-        utils.video_to_hls(source_path, out_dir, sid)
+        utils.video_to_hls(source_path, out_dir, sid, segment_time=segment_time)
     else:
         raise HTTPException(status_code=400, detail="unsupported local media type")
 
@@ -275,6 +290,7 @@ async def _run_local_media_build_job(job_id: str) -> None:
             job["duration"],
             job["width"],
             job["height"],
+            job.get("segment_time"),
         )
         job["state"] = "ready"
     except Exception as e:
@@ -301,12 +317,14 @@ async def _ensure_local_media_job(
     duration: int,
     width: int,
     height: int,
+    segment_time: Optional[int] = None,
     *,
     source_label: str,
     cleanup_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    sid = _local_media_sid(source_key, media_kind, duration, width, height)
-    job_id = _local_media_job_id(source_key, media_kind, duration, width, height)
+    segment_time = utils.normalize_hls_segment_time(segment_time)
+    sid = _local_media_sid(source_key, media_kind, duration, width, height, segment_time)
+    job_id = _local_media_job_id(source_key, media_kind, duration, width, height, segment_time)
 
     async with _LOCAL_MEDIA_BUILD_LOCK:
         job = _LOCAL_MEDIA_BUILD_JOBS.setdefault(
@@ -321,6 +339,7 @@ async def _ensure_local_media_job(
                 "duration": duration,
                 "width": width,
                 "height": height,
+                "segment_time": segment_time,
                 "source_path": str(source_path),
                 "cleanup_path": str(cleanup_path) if cleanup_path else None,
             },
@@ -330,6 +349,7 @@ async def _ensure_local_media_job(
         job["duration"] = duration
         job["width"] = width
         job["height"] = height
+        job["segment_time"] = segment_time
         job["source_label"] = source_label
         job["source_path"] = str(source_path)
         job["cleanup_path"] = str(cleanup_path) if cleanup_path else None
@@ -405,7 +425,11 @@ async def _save_uploaded_media(
 
 
 @router.post("/stream-local-path-build-start")
-async def stream_local_path_build_start(payload: LocalPathBuildRequest, request: Request):
+async def stream_local_path_build_start(
+    payload: LocalPathBuildRequest,
+    request: Request,
+    segment_time: int | None = Query(default=None, ge=1),
+):
     _ensure_loopback_request(request)
     resolved_path = _normalize_local_path(payload.path)
     media_kind = _detect_media_kind(resolved_path)
@@ -417,6 +441,7 @@ async def stream_local_path_build_start(payload: LocalPathBuildRequest, request:
         payload.duration,
         payload.width,
         payload.height,
+        segment_time,
         source_label=resolved_path.name,
     )
 
@@ -429,6 +454,7 @@ async def stream_local_upload_build_start(
     duration: int = Query(default=300, ge=1, le=86400),
     width: int = Query(default=1280, ge=1, le=7680),
     height: int = Query(default=720, ge=1, le=4320),
+    segment_time: int | None = Query(default=None, ge=1),
 ):
     _ensure_loopback_request(request)
     upload_path, sha256_hex, _ = await _save_uploaded_media(request, filename, content_type)
@@ -442,6 +468,7 @@ async def stream_local_upload_build_start(
             duration,
             width,
             height,
+            segment_time,
             source_label=Path(filename or upload_path.name).name,
             cleanup_path=upload_path,
         )

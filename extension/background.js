@@ -9,7 +9,8 @@ async function getSettings() {
     localPort: "8080",
     globalUrl: "",
     tunnelApiPath: "/api/tunnel",
-    manualGlobal: false
+    manualGlobal: false,
+    streamSegmentDuration: 4
   });
 }
 
@@ -143,6 +144,20 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function normalizePositiveInt(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function getStreamingSettings(cfg) {
+  return {
+    segmentTime: normalizePositiveInt(cfg?.streamSegmentDuration, 4)
+  };
+}
+
 function buildStreamUrl(base, sid) {
   return `${String(base || "").replace(/\/$/, "")}/streams/${sid}/index.m3u8`;
 }
@@ -150,6 +165,32 @@ function buildStreamUrl(base, sid) {
 function endpointQuery(endpoint) {
   const idx = String(endpoint || "").indexOf("?");
   return idx >= 0 ? endpoint.slice(idx) : "";
+}
+
+function shouldApplyStreamingSettings(endpoint) {
+  if (typeof endpoint !== "string") return false;
+  return (
+    endpoint.startsWith("/api/stream-yt?") ||
+    endpoint.startsWith("/api/stream-sc?") ||
+    endpoint.startsWith("/api/stream-image?") ||
+    endpoint.startsWith("/api/stream-video?") ||
+    endpoint.startsWith("/api/stream-audio?") ||
+    /^\/api\/stream-tg-(media|video|image)\?/.test(endpoint)
+  );
+}
+
+async function applyStreamingSettingsToEndpoint(endpoint) {
+  if (!shouldApplyStreamingSettings(endpoint)) {
+    return endpoint;
+  }
+
+  const [path, rawQuery = ""] = String(endpoint).split("?");
+  const params = new URLSearchParams(rawQuery);
+  if (!params.has("segment_time")) {
+    const cfg = await getSettings();
+    params.set("segment_time", String(getStreamingSettings(cfg).segmentTime));
+  }
+  return `${path}?${params.toString()}`;
 }
 
 async function getSessionValue(key) {
@@ -410,7 +451,11 @@ async function markQuickLinkJobCopied(url) {
 
 async function startLocalPathBuild(rawPath) {
   const { processBase, finalBase } = await resolveLocalMediaBases();
-  const startRes = await fetch(`${processBase}/local-api/stream-local-path-build-start`, {
+  const cfg = await getSettings();
+  const params = new URLSearchParams({
+    segment_time: String(getStreamingSettings(cfg).segmentTime)
+  });
+  const startRes = await fetch(`${processBase}/local-api/stream-local-path-build-start?${params.toString()}`, {
     method: "POST",
     cache: "no-store",
     headers: {
@@ -472,8 +517,10 @@ async function startLocalUploadBuild(uploadId, fileName, contentType) {
     }
 
     const { processBase, finalBase } = await resolveLocalMediaBases();
+    const cfg = await getSettings();
     const params = new URLSearchParams({
-      filename: effectiveFileName
+      filename: effectiveFileName,
+      segment_time: String(getStreamingSettings(cfg).segmentTime)
     });
     if (effectiveContentType) {
       params.set("content_type", effectiveContentType);
@@ -762,8 +809,8 @@ async function getQuickLinkJobStatus() {
 
 async function startBuildWithConfig(endpoint, startPath) {
   const { processBase, finalBase } = await resolveManagedBuildBases();
-
-  const query = endpointQuery(endpoint);
+  const effectiveEndpoint = await applyStreamingSettingsToEndpoint(endpoint);
+  const query = endpointQuery(effectiveEndpoint);
   const startUrl = `${processBase}${startPath}${query}`;
   console.log("[bg] startBuildWithConfig:", startUrl);
 
@@ -1029,18 +1076,19 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
 
     if (msg.action === "waitAndBuild") {
       try {
-        console.log("[bg] waitAndBuild endpoint=", msg.endpoint);
+        const endpoint = await applyStreamingSettingsToEndpoint(msg.endpoint);
+        console.log("[bg] waitAndBuild endpoint=", endpoint);
 
-        const managedBuild = getManagedBuildConfig(msg.endpoint);
+        const managedBuild = getManagedBuildConfig(endpoint);
         if (managedBuild) {
-          const managedResult = await waitForManagedBuild(msg.endpoint);
+          const managedResult = await waitForManagedBuild(endpoint);
           console.log("[bg] waitAndBuild managed success ->", managedResult.url);
           sendResponse(managedResult);
           return;
         }
 
         const { fetchBase: resolvedFetchBase, resultBase, localBase } = await resolveBases();
-        const longBuild = isLongBuildEndpoint(msg.endpoint);
+        const longBuild = isLongBuildEndpoint(endpoint);
         let fetchBase = resolvedFetchBase;
 
         if (longBuild && localBase && resolvedFetchBase !== localBase) {
@@ -1053,8 +1101,8 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
         if (!fetchBase) throw new Error("No fetch base available");
         if (!resultBase) throw new Error("No result base available");
 
-        const fetchUrl = fetchBase + msg.endpoint;
-        const resultUrl = resultBase + msg.endpoint;
+        const fetchUrl = fetchBase + endpoint;
+        const resultUrl = resultBase + endpoint;
 
         console.log("[bg] waitAndBuild: fetching", fetchUrl);
         const res = await fetchWithGrace(fetchUrl, longBuild ? LONG_BUILD_GRACE_MS : 0);
@@ -1070,9 +1118,10 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
         console.log("[bg] waitAndBuild: success ->", resultUrl);
         sendResponse({ url: resultUrl });
       } catch (e) {
-        if (isLongBuildEndpoint(msg.endpoint) && isAbortError(e)) {
+        const endpoint = await applyStreamingSettingsToEndpoint(msg.endpoint);
+        if (isLongBuildEndpoint(endpoint) && isAbortError(e)) {
           const { resultBase } = await resolveBases();
-          const resultUrl = resultBase + msg.endpoint;
+          const resultUrl = resultBase + endpoint;
           console.log("[bg] waitAndBuild: build still running after grace period, returning pending url");
           sendResponse({ url: resultUrl, pending: true });
           return;

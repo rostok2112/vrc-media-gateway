@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 IMAGE_EXPORT_LAYOUT_VERSION = "fit-pad-v1"
 VIDEO_HLS_LAYOUT_VERSION = "video-h264-v2"
 GIF_EXPORT_LAYOUT_VERSION = "gif-motion-v1"
+DEFAULT_HLS_SEGMENT_TIME = int(config.HLS_OPTS.get("hls_time", 4))
 
 
 # =========================
@@ -128,6 +129,24 @@ def is_gif_file(path: Path) -> bool:
         return False
 
     return header in {b"GIF87a", b"GIF89a"}
+
+
+def normalize_hls_segment_time(segment_time: Optional[int]) -> int:
+    try:
+        value = int(segment_time) if segment_time is not None else DEFAULT_HLS_SEGMENT_TIME
+    except (TypeError, ValueError):
+        value = DEFAULT_HLS_SEGMENT_TIME
+    return max(1, value)
+
+
+def hls_opts_with_segment_time(segment_time: Optional[int] = None) -> Dict[str, Any]:
+    hls = dict(config.HLS_OPTS)
+    hls["hls_time"] = str(normalize_hls_segment_time(segment_time))
+    return hls
+
+
+def hls_segment_cache_part(segment_time: Optional[int] = None) -> str:
+    return f"segment_time={normalize_hls_segment_time(segment_time)}"
 
 
 # =========================
@@ -231,9 +250,14 @@ def image_to_mp4(
 # HLS BUILDERS
 # =========================
 
-def video_to_hls(video: Path, out_dir: Path, stream_id: str):
+def video_to_hls(
+    video: Path,
+    out_dir: Path,
+    stream_id: str,
+    segment_time: Optional[int] = None,
+):
     m3u8 = out_dir / "index.m3u8"
-    hls = config.HLS_OPTS
+    hls = hls_opts_with_segment_time(segment_time)
     video_codec = probe_primary_video_codec(video)
     video_args: List[str]
 
@@ -276,9 +300,14 @@ def video_to_hls(video: Path, out_dir: Path, stream_id: str):
     run_cmd(cmd)
 
 
-def audio_to_hls(audio: Path, out_dir: Path, stream_id: str):
+def audio_to_hls(
+    audio: Path,
+    out_dir: Path,
+    stream_id: str,
+    segment_time: Optional[int] = None,
+):
     m3u8 = out_dir / "index.m3u8"
-    hls = config.HLS_OPTS
+    hls = hls_opts_with_segment_time(segment_time)
 
     cmd = [
         config.FFMPEG, "-y",
@@ -305,6 +334,7 @@ def build_hls_from_image(
     duration: int = 300,
     width: int = 1280,
     height: int = 720,
+    segment_time: Optional[int] = None,
 ):
     out_dir = config.STREAMS / stream_id
     m3u8 = out_dir / "index.m3u8"
@@ -325,10 +355,10 @@ def build_hls_from_image(
         download_file(image_url, img, max_bytes=download_limit)
 
     if is_gif_file(img):
-        video_to_hls(img, out_dir, stream_id)
+        video_to_hls(img, out_dir, stream_id, segment_time=segment_time)
     else:
         image_to_mp4(img, mp4, duration, width, height)
-        video_to_hls(mp4, out_dir, stream_id)
+        video_to_hls(mp4, out_dir, stream_id, segment_time=segment_time)
 
         try:
             mp4.unlink()
@@ -389,24 +419,56 @@ def sid_for_url(url: str, *extra_parts) -> str:
     return hashlib.md5(s.encode()).hexdigest()
 
 
-def image_stream_sid(url: str, duration: int, width: int, height: int) -> str:
+def image_stream_sid(
+    url: str,
+    duration: int,
+    width: int,
+    height: int,
+    segment_time: Optional[int] = None,
+) -> str:
     if is_probably_gif_source(url):
-        return sid_for_url(url, GIF_EXPORT_LAYOUT_VERSION)
-    return sid_for_url(url, IMAGE_EXPORT_LAYOUT_VERSION, f"{duration}{width}x{height}")
+        return sid_for_url(url, GIF_EXPORT_LAYOUT_VERSION, hls_segment_cache_part(segment_time))
+    return sid_for_url(
+        url,
+        IMAGE_EXPORT_LAYOUT_VERSION,
+        hls_segment_cache_part(segment_time),
+        f"{duration}{width}x{height}",
+    )
 
 
-def image_build_job_id(url: str, duration: int, width: int, height: int, scope: str = "img-build") -> str:
+def image_build_job_id(
+    url: str,
+    duration: int,
+    width: int,
+    height: int,
+    scope: str = "img-build",
+    segment_time: Optional[int] = None,
+) -> str:
     if is_probably_gif_source(url):
-        return sid_for_url(url, scope, GIF_EXPORT_LAYOUT_VERSION)
-    return sid_for_url(url, scope, IMAGE_EXPORT_LAYOUT_VERSION, f"{duration}{width}x{height}")
+        return sid_for_url(url, scope, GIF_EXPORT_LAYOUT_VERSION, hls_segment_cache_part(segment_time))
+    return sid_for_url(
+        url,
+        scope,
+        IMAGE_EXPORT_LAYOUT_VERSION,
+        hls_segment_cache_part(segment_time),
+        f"{duration}{width}x{height}",
+    )
 
 
-def video_stream_sid(url: str, *extra_parts) -> str:
-    return sid_for_url(url, VIDEO_HLS_LAYOUT_VERSION, *extra_parts)
+def audio_stream_sid(url: str, *extra_parts, segment_time: Optional[int] = None) -> str:
+    return sid_for_url(url, hls_segment_cache_part(segment_time), *extra_parts)
 
 
-def video_build_job_id(url: str, scope: str = "video-build", *extra_parts) -> str:
-    return sid_for_url(url, scope, VIDEO_HLS_LAYOUT_VERSION, *extra_parts)
+def audio_build_job_id(url: str, scope: str = "audio-build", *extra_parts, segment_time: Optional[int] = None) -> str:
+    return sid_for_url(url, scope, hls_segment_cache_part(segment_time), *extra_parts)
+
+
+def video_stream_sid(url: str, *extra_parts, segment_time: Optional[int] = None) -> str:
+    return sid_for_url(url, VIDEO_HLS_LAYOUT_VERSION, hls_segment_cache_part(segment_time), *extra_parts)
+
+
+def video_build_job_id(url: str, scope: str = "video-build", *extra_parts, segment_time: Optional[int] = None) -> str:
+    return sid_for_url(url, scope, VIDEO_HLS_LAYOUT_VERSION, hls_segment_cache_part(segment_time), *extra_parts)
 
 def out_dir_for_sid(sid: str) -> Path:
     return config.STREAMS / sid

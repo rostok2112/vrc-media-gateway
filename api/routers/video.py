@@ -47,12 +47,23 @@ def _normalize_referer(referer: Optional[str]) -> str:
     return value
 
 
-def _video_sid(url: str, referer: str = "") -> str:
-    return utils.sid_for_url(url, GENERIC_VIDEO_LAYOUT_VERSION, f"referer={referer}")
+def _video_sid(url: str, referer: str = "", segment_time: Optional[int] = None) -> str:
+    return utils.video_stream_sid(
+        url,
+        GENERIC_VIDEO_LAYOUT_VERSION,
+        f"referer={referer}",
+        segment_time=segment_time,
+    )
 
 
-def _video_job_id(url: str, referer: str = "") -> str:
-    return utils.sid_for_url(url, "video-build", GENERIC_VIDEO_LAYOUT_VERSION, f"referer={referer}")
+def _video_job_id(url: str, referer: str = "", segment_time: Optional[int] = None) -> str:
+    return utils.video_build_job_id(
+        url,
+        "video-build",
+        GENERIC_VIDEO_LAYOUT_VERSION,
+        f"referer={referer}",
+        segment_time=segment_time,
+    )
 
 
 def _stream_path_for_sid(sid: str) -> str:
@@ -90,9 +101,15 @@ def _http_input_headers(referer: str) -> str:
     return "".join(f"{line}\r\n" for line in lines)
 
 
-def _build_video_sync(url: str, referer: str, out_dir, sid: str) -> None:
+def _build_video_sync(
+    url: str,
+    referer: str,
+    out_dir,
+    sid: str,
+    segment_time: Optional[int] = None,
+) -> None:
     m3u8 = out_dir / "index.m3u8"
-    hls = config.HLS_OPTS
+    hls = utils.hls_opts_with_segment_time(segment_time)
 
     cmd = [
         config.FFMPEG, "-y",
@@ -123,17 +140,21 @@ def _build_video_sync(url: str, referer: str, out_dir, sid: str) -> None:
     utils.run_cmd(cmd)
 
 
-async def _ensure_video_stream(url: str, referer: str) -> str:
+async def _ensure_video_stream(
+    url: str,
+    referer: str,
+    segment_time: Optional[int] = None,
+) -> str:
     url = _normalize_video_url(url)
     referer = _normalize_referer(referer)
-    sid = _video_sid(url, referer)
+    sid = _video_sid(url, referer, segment_time)
 
     if _is_hls_ready(sid):
         return sid
 
     out_dir = config.STREAMS / sid
     out_dir.mkdir(parents=True, exist_ok=True)
-    await asyncio.to_thread(_build_video_sync, url, referer, out_dir, sid)
+    await asyncio.to_thread(_build_video_sync, url, referer, out_dir, sid, segment_time)
 
     if not _is_hls_ready(sid):
         raise HTTPException(status_code=500, detail="video HLS build failed")
@@ -141,13 +162,18 @@ async def _ensure_video_stream(url: str, referer: str) -> str:
     return sid
 
 
-async def _run_video_build_job(job_id: str, url: str, referer: str) -> None:
+async def _run_video_build_job(
+    job_id: str,
+    url: str,
+    referer: str,
+    segment_time: Optional[int],
+) -> None:
     job = _VIDEO_BUILD_JOBS[job_id]
     job["state"] = "running"
     job["error"] = None
 
     try:
-        result_sid = await _ensure_video_stream(url, referer)
+        result_sid = await _ensure_video_stream(url, referer, segment_time)
         job["state"] = "ready"
         job["result_sid"] = result_sid
     except Exception as e:
@@ -159,11 +185,16 @@ async def _run_video_build_job(job_id: str, url: str, referer: str) -> None:
             _VIDEO_BUILD_TASKS.pop(job_id, None)
 
 
-async def _ensure_video_build_job(url: str, referer: str) -> Dict[str, Any]:
+async def _ensure_video_build_job(
+    url: str,
+    referer: str,
+    segment_time: Optional[int] = None,
+) -> Dict[str, Any]:
     url = _normalize_video_url(url)
     referer = _normalize_referer(referer)
-    sid = _video_sid(url, referer)
-    job_id = _video_job_id(url, referer)
+    segment_time = utils.normalize_hls_segment_time(segment_time)
+    sid = _video_sid(url, referer, segment_time)
+    job_id = _video_job_id(url, referer, segment_time)
 
     async with _VIDEO_BUILD_LOCK:
         job = _VIDEO_BUILD_JOBS.setdefault(
@@ -172,11 +203,14 @@ async def _ensure_video_build_job(url: str, referer: str) -> Dict[str, Any]:
                 "job_id": job_id,
                 "url": url,
                 "referer": referer,
+                "segment_time": segment_time,
                 "state": "pending",
                 "result_sid": None,
                 "error": None,
             },
         )
+
+        job["segment_time"] = segment_time
 
         if _is_hls_ready(sid):
             job["state"] = "ready"
@@ -191,7 +225,9 @@ async def _ensure_video_build_job(url: str, referer: str) -> Dict[str, Any]:
         job["state"] = "pending"
         job["result_sid"] = None
         job["error"] = None
-        _VIDEO_BUILD_TASKS[job_id] = asyncio.create_task(_run_video_build_job(job_id, url, referer))
+        _VIDEO_BUILD_TASKS[job_id] = asyncio.create_task(
+            _run_video_build_job(job_id, url, referer, segment_time)
+        )
         return _job_snapshot(job_id)
 
 
@@ -199,8 +235,9 @@ async def _ensure_video_build_job(url: str, referer: str) -> Dict[str, Any]:
 async def stream_video_build_start(
     url: str = Query(...),
     referer: Optional[str] = Query(default=""),
+    segment_time: int | None = Query(default=None, ge=1),
 ):
-    return await _ensure_video_build_job(url, referer or "")
+    return await _ensure_video_build_job(url, referer or "", segment_time)
 
 
 @router.get("/stream-video-build-status")
@@ -215,6 +252,7 @@ async def stream_video_build_status(job_id: str = Query(...)):
 async def stream_video(
     url: str = Query(...),
     referer: Optional[str] = Query(default=""),
+    segment_time: int | None = Query(default=None, ge=1),
 ):
-    sid = await _ensure_video_stream(url, referer or "")
+    sid = await _ensure_video_stream(url, referer or "", segment_time)
     return _hls_response(sid)

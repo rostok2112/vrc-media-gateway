@@ -84,6 +84,13 @@
     margin-top: 8px;
   }
 
+  .settings-subsection {
+    display: none;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255,255,255,0.18);
+  }
+
   .section-title {
     font-size: 13px;
     font-weight: bold;
@@ -177,6 +184,14 @@
   <input id="globalUrl" placeholder="https://xxxx.trycloudflare.com">
   <div id="globalError" class="error"></div>
   <button id="refreshPublic">Refresh public URL</button>
+  <button id="toggleStreamingSettings" type="button">Streaming settings</button>
+
+  <div id="streamingSettingsSection" class="settings-subsection">
+    <div class="section-title">Streaming</div>
+    <label for="streamSegmentDuration">Segment duration (sec)</label>
+    <input id="streamSegmentDuration" type="number" min="1" step="1" inputmode="numeric" />
+  </div>
+
   <button id="clearAllCache" type="button" class="danger-button">Clear all cache</button>
 
 </div>

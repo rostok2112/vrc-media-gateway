@@ -23,6 +23,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const dropZone = $("dropZone");
   const toggleSettingsBtn = $("toggleSettings");
   const settingsBox = $("settings");
+  const toggleStreamingSettingsBtn = $("toggleStreamingSettings");
+  const streamingSettingsSection = $("streamingSettingsSection");
+  const streamSegmentDuration = $("streamSegmentDuration");
   const spinner = $("spinner");
   const status = $("status");
 
@@ -43,8 +46,21 @@ document.addEventListener("DOMContentLoaded", () => {
       settingsBox.style.display === "block" ? "none" : "block";
   });
 
+  toggleStreamingSettingsBtn.addEventListener("click", () => {
+    streamingSettingsSection.style.display =
+      streamingSettingsSection.style.display === "block" ? "none" : "block";
+  });
+
   function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function normalizePositiveInt(value, fallback) {
+    const parsed = Number.parseInt(String(value ?? ""), 10);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      return fallback;
+    }
+    return parsed;
   }
 
   function formatBytes(size) {
@@ -478,6 +494,7 @@ document.addEventListener("DOMContentLoaded", () => {
     localAddress.value = cfg.localAddress || "127.0.0.1";
     localPort.value = cfg.localPort || "8080";
     globalUrl.value = cfg.globalUrl || "";
+    streamSegmentDuration.value = String(normalizePositiveInt(cfg.streamSegmentDuration, 4));
 
     updateVisibility();
     clearError();
@@ -521,6 +538,17 @@ document.addEventListener("DOMContentLoaded", () => {
   useLocalApi.addEventListener("change", () => saveSettings({ useLocalApiForProcessing: useLocalApi.checked }));
   localAddress.addEventListener("change", () => saveSettings({ localAddress: localAddress.value.trim() }));
   localPort.addEventListener("change", () => saveSettings({ localPort: localPort.value.trim() }));
+
+  function syncStreamingSettings(save = false) {
+    const duration = normalizePositiveInt(streamSegmentDuration.value, 4);
+    streamSegmentDuration.value = String(duration);
+    if (save) {
+      saveSettings({ streamSegmentDuration: duration });
+    }
+  }
+
+  streamSegmentDuration.addEventListener("change", () => syncStreamingSettings(true));
+  streamSegmentDuration.addEventListener("blur", () => syncStreamingSettings(true));
 
   globalUrl.addEventListener("change", async () => {
     const v = globalUrl.value.trim();

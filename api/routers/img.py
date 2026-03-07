@@ -50,8 +50,21 @@ def _is_hls_ready(sid: str) -> bool:
     return utils.is_hls_output_ready(config.STREAMS / sid)
 
 
-def _img_job_id(url: str, duration: int, width: int, height: int) -> str:
-    return utils.image_build_job_id(url, duration, width, height, scope="img-build")
+def _img_job_id(
+    url: str,
+    duration: int,
+    width: int,
+    height: int,
+    segment_time: Optional[int] = None,
+) -> str:
+    return utils.image_build_job_id(
+        url,
+        duration,
+        width,
+        height,
+        scope="img-build",
+        segment_time=segment_time,
+    )
 
 
 def _job_snapshot(job_id: str) -> Optional[Dict[str, Any]]:
@@ -67,16 +80,30 @@ def _job_snapshot(job_id: str) -> Optional[Dict[str, Any]]:
     return snapshot
 
 
-async def _ensure_image_stream(url: str, duration: int, width: int, height: int) -> str:
+async def _ensure_image_stream(
+    url: str,
+    duration: int,
+    width: int,
+    height: int,
+    segment_time: Optional[int] = None,
+) -> str:
     url = _normalize_image_url(url)
-    sid = utils.image_stream_sid(url, duration, width, height)
+    sid = utils.image_stream_sid(url, duration, width, height, segment_time)
 
     if _is_hls_ready(sid):
         return sid
 
     out_dir = config.STREAMS / sid
     out_dir.mkdir(parents=True, exist_ok=True)
-    await asyncio.to_thread(utils.build_hls_from_image, url, sid, duration, width, height)
+    await asyncio.to_thread(
+        utils.build_hls_from_image,
+        url,
+        sid,
+        duration,
+        width,
+        height,
+        segment_time,
+    )
 
     if not _is_hls_ready(sid):
         raise HTTPException(status_code=500, detail="image HLS build failed")
@@ -84,13 +111,20 @@ async def _ensure_image_stream(url: str, duration: int, width: int, height: int)
     return sid
 
 
-async def _run_img_build_job(job_id: str, url: str, duration: int, width: int, height: int) -> None:
+async def _run_img_build_job(
+    job_id: str,
+    url: str,
+    duration: int,
+    width: int,
+    height: int,
+    segment_time: Optional[int],
+) -> None:
     job = _IMG_BUILD_JOBS[job_id]
     job["state"] = "running"
     job["error"] = None
 
     try:
-        result_sid = await _ensure_image_stream(url, duration, width, height)
+        result_sid = await _ensure_image_stream(url, duration, width, height, segment_time)
         job["state"] = "ready"
         job["result_sid"] = result_sid
     except Exception as e:
@@ -102,10 +136,17 @@ async def _run_img_build_job(job_id: str, url: str, duration: int, width: int, h
             _IMG_BUILD_TASKS.pop(job_id, None)
 
 
-async def _ensure_img_build_job(url: str, duration: int, width: int, height: int) -> Dict[str, Any]:
+async def _ensure_img_build_job(
+    url: str,
+    duration: int,
+    width: int,
+    height: int,
+    segment_time: Optional[int] = None,
+) -> Dict[str, Any]:
     url = _normalize_image_url(url)
-    sid = utils.image_stream_sid(url, duration, width, height)
-    job_id = _img_job_id(url, duration, width, height)
+    segment_time = utils.normalize_hls_segment_time(segment_time)
+    sid = utils.image_stream_sid(url, duration, width, height, segment_time)
+    job_id = _img_job_id(url, duration, width, height, segment_time)
 
     async with _IMG_BUILD_LOCK:
         job = _IMG_BUILD_JOBS.setdefault(
@@ -116,11 +157,14 @@ async def _ensure_img_build_job(url: str, duration: int, width: int, height: int
                 "duration": duration,
                 "width": width,
                 "height": height,
+                "segment_time": segment_time,
                 "state": "pending",
                 "result_sid": None,
                 "error": None,
             },
         )
+
+        job["segment_time"] = segment_time
 
         if _is_hls_ready(sid):
             job["state"] = "ready"
@@ -136,7 +180,7 @@ async def _ensure_img_build_job(url: str, duration: int, width: int, height: int
         job["result_sid"] = None
         job["error"] = None
         _IMG_BUILD_TASKS[job_id] = asyncio.create_task(
-            _run_img_build_job(job_id, url, duration, width, height)
+            _run_img_build_job(job_id, url, duration, width, height, segment_time)
         )
         return _job_snapshot(job_id)
 
@@ -147,8 +191,9 @@ async def stream_image_build_start(
     duration: int = Query(300),
     width: int = Query(1280),
     height: int = Query(720),
+    segment_time: int | None = Query(default=None, ge=1),
 ):
-    return await _ensure_img_build_job(url, duration, width, height)
+    return await _ensure_img_build_job(url, duration, width, height, segment_time)
 
 
 @router.get("/stream-image-build-status")
@@ -165,6 +210,7 @@ async def stream_image(
     duration: int = Query(300),
     width: int = Query(1280),
     height: int = Query(720),
+    segment_time: int | None = Query(default=None, ge=1),
 ):
-    sid = await _ensure_image_stream(url, duration, width, height)
+    sid = await _ensure_image_stream(url, duration, width, height, segment_time)
     return _hls_response(sid)

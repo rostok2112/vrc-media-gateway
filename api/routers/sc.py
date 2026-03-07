@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import subprocess
 from typing import Any, Dict, Optional
 
@@ -29,8 +28,8 @@ async def clear_sc_build_jobs() -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def _sc_sid(url: str) -> str:
-    return hashlib.md5(url.encode()).hexdigest()
+def _sc_sid(url: str, segment_time: Optional[int] = None) -> str:
+    return utils.audio_stream_sid(url, "soundcloud", segment_time=segment_time)
 
 
 def _stream_path_for_sid(sid: str) -> str:
@@ -48,8 +47,8 @@ def _is_hls_ready(sid: str) -> bool:
     return utils.is_hls_output_ready(config.STREAMS / sid)
 
 
-def _sc_job_id(url: str) -> str:
-    return hashlib.md5(f"sc-build|{url}".encode()).hexdigest()
+def _sc_job_id(url: str, segment_time: Optional[int] = None) -> str:
+    return utils.audio_build_job_id(url, "sc-build", "soundcloud", segment_time=segment_time)
 
 
 def _job_snapshot(job_id: str) -> Optional[Dict[str, Any]]:
@@ -65,7 +64,12 @@ def _job_snapshot(job_id: str) -> Optional[Dict[str, Any]]:
     return snapshot
 
 
-def _build_sc_sync(url: str, out_dir, sid: str) -> None:
+def _build_sc_sync(
+    url: str,
+    out_dir,
+    sid: str,
+    segment_time: Optional[int] = None,
+) -> None:
     audio_out = out_dir / "audio.m4a"
 
     if not audio_out.exists() or audio_out.stat().st_size == 0:
@@ -81,11 +85,12 @@ def _build_sc_sync(url: str, out_dir, sid: str) -> None:
         else:
             subprocess.run(base_cmd, check=True)
 
-    utils.audio_to_hls(audio_out, out_dir, sid)
+    utils.audio_to_hls(audio_out, out_dir, sid, segment_time=segment_time)
 
 
-async def _ensure_sc_stream(url: str) -> str:
-    sid = _sc_sid(url)
+async def _ensure_sc_stream(url: str, segment_time: Optional[int] = None) -> str:
+    segment_time = utils.normalize_hls_segment_time(segment_time)
+    sid = _sc_sid(url, segment_time)
     if _is_hls_ready(sid):
         return sid
 
@@ -93,7 +98,7 @@ async def _ensure_sc_stream(url: str) -> str:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        await asyncio.to_thread(_build_sc_sync, url, out_dir, sid)
+        await asyncio.to_thread(_build_sc_sync, url, out_dir, sid, segment_time)
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=500, detail=f"yt-dlp failed: {e}")
     except HTTPException:
@@ -107,13 +112,13 @@ async def _ensure_sc_stream(url: str) -> str:
     return sid
 
 
-async def _run_sc_build_job(job_id: str, url: str) -> None:
+async def _run_sc_build_job(job_id: str, url: str, segment_time: Optional[int]) -> None:
     job = _SC_BUILD_JOBS[job_id]
     job["state"] = "running"
     job["error"] = None
 
     try:
-        result_sid = await _ensure_sc_stream(url)
+        result_sid = await _ensure_sc_stream(url, segment_time)
         job["state"] = "ready"
         job["result_sid"] = result_sid
     except Exception as e:
@@ -125,9 +130,10 @@ async def _run_sc_build_job(job_id: str, url: str) -> None:
             _SC_BUILD_TASKS.pop(job_id, None)
 
 
-async def _ensure_sc_build_job(url: str) -> Dict[str, Any]:
-    sid = _sc_sid(url)
-    job_id = _sc_job_id(url)
+async def _ensure_sc_build_job(url: str, segment_time: Optional[int] = None) -> Dict[str, Any]:
+    segment_time = utils.normalize_hls_segment_time(segment_time)
+    sid = _sc_sid(url, segment_time)
+    job_id = _sc_job_id(url, segment_time)
 
     async with _SC_BUILD_LOCK:
         job = _SC_BUILD_JOBS.setdefault(
@@ -135,11 +141,14 @@ async def _ensure_sc_build_job(url: str) -> Dict[str, Any]:
             {
                 "job_id": job_id,
                 "url": url,
+                "segment_time": segment_time,
                 "state": "pending",
                 "result_sid": None,
                 "error": None,
             },
         )
+
+        job["segment_time"] = segment_time
 
         if _is_hls_ready(sid):
             job["state"] = "ready"
@@ -154,13 +163,16 @@ async def _ensure_sc_build_job(url: str) -> Dict[str, Any]:
         job["state"] = "pending"
         job["result_sid"] = None
         job["error"] = None
-        _SC_BUILD_TASKS[job_id] = asyncio.create_task(_run_sc_build_job(job_id, url))
+        _SC_BUILD_TASKS[job_id] = asyncio.create_task(_run_sc_build_job(job_id, url, segment_time))
         return _job_snapshot(job_id)
 
 
 @router.get("/stream-sc-build-start")
-async def stream_sc_build_start(url: str = Query(...)):
-    return await _ensure_sc_build_job(url)
+async def stream_sc_build_start(
+    url: str = Query(...),
+    segment_time: int | None = Query(default=None, ge=1),
+):
+    return await _ensure_sc_build_job(url, segment_time)
 
 
 @router.get("/stream-sc-build-status")
@@ -172,6 +184,9 @@ async def stream_sc_build_status(job_id: str = Query(...)):
 
 
 @router.get("/stream-sc")
-async def stream_sc(url: str = Query(...)):
-    sid = await _ensure_sc_stream(url)
+async def stream_sc(
+    url: str = Query(...),
+    segment_time: int | None = Query(default=None, ge=1),
+):
+    sid = await _ensure_sc_stream(url, segment_time)
     return _hls_response(sid)

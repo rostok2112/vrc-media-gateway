@@ -44,12 +44,12 @@ def normalize_yt_url(url: str) -> str:
     return url
 
 
-def _yt_sid(norm_url: str) -> str:
-    return utils.video_stream_sid(norm_url, "yt")
+def _yt_sid(norm_url: str, segment_time: Optional[int] = None) -> str:
+    return utils.video_stream_sid(norm_url, "yt", segment_time=segment_time)
 
 
-def _yt_job_id(norm_url: str) -> str:
-    return utils.video_build_job_id(norm_url, "yt-build", "yt")
+def _yt_job_id(norm_url: str, segment_time: Optional[int] = None) -> str:
+    return utils.video_build_job_id(norm_url, "yt-build", "yt", segment_time=segment_time)
 
 
 def _stream_path_for_sid(sid: str) -> str:
@@ -121,15 +121,16 @@ def _download_youtube_to_file(norm_url: str, video_out) -> None:
             raise HTTPException(status_code=500, detail=f"yt-dlp failed. stderr: {e.stderr[:2000]}")
 
 
-def _build_yt_sync(norm_url: str, out_dir, sid: str) -> None:
+def _build_yt_sync(norm_url: str, out_dir, sid: str, segment_time: Optional[int] = None) -> None:
     video_out = out_dir / "video.mp4"
     _download_youtube_to_file(norm_url, video_out)
-    utils.video_to_hls(video_out, out_dir, sid)
+    utils.video_to_hls(video_out, out_dir, sid, segment_time=segment_time)
 
 
-async def _ensure_yt_stream(url: str) -> str:
+async def _ensure_yt_stream(url: str, segment_time: Optional[int] = None) -> str:
     norm = normalize_yt_url(url)
-    sid = _yt_sid(norm)
+    segment_time = utils.normalize_hls_segment_time(segment_time)
+    sid = _yt_sid(norm, segment_time)
     if _is_hls_ready(sid):
         return sid
 
@@ -137,7 +138,7 @@ async def _ensure_yt_stream(url: str) -> str:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        await asyncio.to_thread(_build_yt_sync, norm, out_dir, sid)
+        await asyncio.to_thread(_build_yt_sync, norm, out_dir, sid, segment_time)
     except HTTPException:
         raise
     except Exception as e:
@@ -149,13 +150,13 @@ async def _ensure_yt_stream(url: str) -> str:
     return sid
 
 
-async def _run_yt_build_job(job_id: str, url: str) -> None:
+async def _run_yt_build_job(job_id: str, url: str, segment_time: Optional[int]) -> None:
     job = _YT_BUILD_JOBS[job_id]
     job["state"] = "running"
     job["error"] = None
 
     try:
-        result_sid = await _ensure_yt_stream(url)
+        result_sid = await _ensure_yt_stream(url, segment_time)
         job["state"] = "ready"
         job["result_sid"] = result_sid
     except Exception as e:
@@ -167,10 +168,11 @@ async def _run_yt_build_job(job_id: str, url: str) -> None:
             _YT_BUILD_TASKS.pop(job_id, None)
 
 
-async def _ensure_yt_build_job(url: str) -> Dict[str, Any]:
+async def _ensure_yt_build_job(url: str, segment_time: Optional[int] = None) -> Dict[str, Any]:
     norm = normalize_yt_url(url)
-    sid = _yt_sid(norm)
-    job_id = _yt_job_id(norm)
+    segment_time = utils.normalize_hls_segment_time(segment_time)
+    sid = _yt_sid(norm, segment_time)
+    job_id = _yt_job_id(norm, segment_time)
 
     async with _YT_BUILD_LOCK:
         job = _YT_BUILD_JOBS.setdefault(
@@ -179,11 +181,14 @@ async def _ensure_yt_build_job(url: str) -> Dict[str, Any]:
                 "job_id": job_id,
                 "url": url,
                 "normalized_url": norm,
+                "segment_time": segment_time,
                 "state": "pending",
                 "result_sid": None,
                 "error": None,
             },
         )
+
+        job["segment_time"] = segment_time
 
         if _is_hls_ready(sid):
             job["state"] = "ready"
@@ -198,13 +203,16 @@ async def _ensure_yt_build_job(url: str) -> Dict[str, Any]:
         job["state"] = "pending"
         job["result_sid"] = None
         job["error"] = None
-        _YT_BUILD_TASKS[job_id] = asyncio.create_task(_run_yt_build_job(job_id, url))
+        _YT_BUILD_TASKS[job_id] = asyncio.create_task(_run_yt_build_job(job_id, url, segment_time))
         return _job_snapshot(job_id)
 
 
 @router.get("/stream-yt-build-start")
-async def stream_yt_build_start(url: str = Query(...)):
-    return await _ensure_yt_build_job(url)
+async def stream_yt_build_start(
+    url: str = Query(...),
+    segment_time: int | None = Query(default=None, ge=1),
+):
+    return await _ensure_yt_build_job(url, segment_time)
 
 
 @router.get("/stream-yt-build-status")
@@ -216,6 +224,9 @@ async def stream_yt_build_status(job_id: str = Query(...)):
 
 
 @router.get("/stream-yt")
-async def stream_yt(url: str = Query(...)):
-    sid = await _ensure_yt_stream(url)
+async def stream_yt(
+    url: str = Query(...),
+    segment_time: int | None = Query(default=None, ge=1),
+):
+    sid = await _ensure_yt_stream(url, segment_time)
     return _hls_response(sid)

@@ -79,6 +79,11 @@ function isProbablyDirectVideoUrl(value) {
   return /\.(mp4|m4v|mov|mkv|avi|webm|ts|mts|m2ts|flv|m3u8)(?:[?#].*)?$/i.test(src);
 }
 
+function isProbablyDirectAudioUrl(value) {
+  const src = String(value || "").trim();
+  return /\.(mp3|m4a|aac|flac|ogg|oga|opus|wav|wma)(?:[?#].*)?$/i.test(src);
+}
+
 function isTelegramMediaEndpoint(endpoint) {
   return typeof endpoint === "string" &&
     /^\/api\/stream-tg-(media|video|image)\?/.test(endpoint);
@@ -114,6 +119,12 @@ function getManagedBuildConfig(endpoint) {
     return {
       startPath: "/api/stream-video-build-start",
       statusPath: "/api/stream-video-build-status"
+    };
+  }
+  if (endpoint.startsWith("/api/stream-audio?")) {
+    return {
+      startPath: "/api/stream-audio-build-start",
+      statusPath: "/api/stream-audio-build-status"
     };
   }
   return null;
@@ -517,6 +528,13 @@ function buildManagedEndpointForSource(src) {
     return {
       endpoint: "/api/stream-video?url=" + encodeURIComponent(src),
       sourceKind: "video",
+      sourceLabel: src
+    };
+  }
+  if (isProbablyDirectAudioUrl(src)) {
+    return {
+      endpoint: "/api/stream-audio?url=" + encodeURIComponent(src),
+      sourceKind: "audio",
       sourceLabel: src
     };
   }
@@ -1102,6 +1120,7 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
 
 const VR_IMAGE_MENU_ID = "vrchat-resolve-image";
 const VR_VIDEO_MENU_ID = "vrchat-resolve-video";
+const VR_AUDIO_MENU_ID = "vrchat-resolve-audio";
 
 chrome.runtime.onInstalled.addListener(() => {
   try {
@@ -1115,6 +1134,11 @@ chrome.runtime.onInstalled.addListener(() => {
         id: VR_VIDEO_MENU_ID,
         title: "VRChat",
         contexts: ["video"]
+      });
+      chrome.contextMenus.create({
+        id: VR_AUDIO_MENU_ID,
+        title: "VRChat",
+        contexts: ["audio"]
       });
       console.log("[bg] image context menu created");
     });
@@ -1140,6 +1164,28 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     chrome.tabs.sendMessage(tab.id, {
       action: "vr_resolve_image",
       url: imageUrl
+    });
+    return;
+  }
+
+  if (info.menuItemId === VR_AUDIO_MENU_ID) {
+    const audioUrl = info.srcUrl;
+    const referer = info.frameUrl || info.pageUrl || "";
+
+    console.log("[bg] audio menu clicked", { audioUrl, referer });
+
+    if (!audioUrl) {
+      chrome.tabs.sendMessage(tab.id, {
+        action: "vr_audio_error",
+        error: "No audio url"
+      });
+      return;
+    }
+
+    chrome.tabs.sendMessage(tab.id, {
+      action: "vr_resolve_audio",
+      url: audioUrl,
+      referer
     });
     return;
   }

@@ -196,11 +196,24 @@
       resolveEndpoint(endpoint);
     }
 
+    if (msg.action === "vr_resolve_audio") {
+      const audioUrl = msg.url;
+      let endpoint = "/api/stream-audio?url=" + encodeURIComponent(audioUrl);
+      if (msg.referer) {
+        endpoint += "&referer=" + encodeURIComponent(msg.referer);
+      }
+      resolveEndpoint(endpoint);
+    }
+
     if (msg.action === "vr_image_error") {
       popupError(msg.error);
     }
 
     if (msg.action === "vr_video_error") {
+      popupError(msg.error);
+    }
+
+    if (msg.action === "vr_audio_error") {
       popupError(msg.error);
     }
   });

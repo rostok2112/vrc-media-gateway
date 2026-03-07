@@ -271,6 +271,7 @@ document.addEventListener("DOMContentLoaded", () => {
           : "Preparing local media stream...";
       case "youtube":
       case "soundcloud":
+      case "audio":
       case "video":
       case "image":
         return "Waiting for server...";

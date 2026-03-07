@@ -1,1 +1,1 @@
-from . import telegram, sc, yt, img, video, segments, spotify, infrastructure, local_media
+from . import telegram, sc, yt, img, video, audio, segments, spotify, infrastructure, local_media

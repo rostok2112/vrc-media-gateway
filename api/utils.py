@@ -33,8 +33,9 @@ logger = logging.getLogger(__name__)
 IMAGE_EXPORT_LAYOUT_VERSION = "fit-pad-v1"
 VIDEO_HLS_LAYOUT_VERSION = "video-h264-v2"
 GIF_EXPORT_LAYOUT_VERSION = "gif-motion-v1"
-POST_TEXT_EXPORT_LAYOUT_VERSION = "post-text-v4"
+POST_TEXT_EXPORT_LAYOUT_VERSION = "post-text-v5"
 DEFAULT_HLS_SEGMENT_TIME = int(config.HLS_OPTS.get("hls_time", 4))
+TWEMOJI_BASE_URL = "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72"
 
 
 # =========================
@@ -389,6 +390,152 @@ def ffmpeg_filter_path(path: Path) -> str:
     return path.resolve().as_posix().replace(":", r"\:").replace("'", r"\'")
 
 
+def emoji_cache_dir() -> Path:
+    cache_dir = Path(config.OUTPUT) / "_emoji_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def is_regional_indicator(ch: str) -> bool:
+    cp = ord(ch)
+    return 0x1F1E6 <= cp <= 0x1F1FF
+
+
+def is_skin_tone_modifier(ch: str) -> bool:
+    cp = ord(ch)
+    return 0x1F3FB <= cp <= 0x1F3FF
+
+
+def is_variation_selector(ch: str) -> bool:
+    return ord(ch) in {0xFE0E, 0xFE0F}
+
+
+def is_keycap_base(ch: str) -> bool:
+    return ch.isdigit() or ch in {"#", "*"}
+
+
+def is_emoji_base_char(ch: str) -> bool:
+    cp = ord(ch)
+    return (
+        0x1F000 <= cp <= 0x1FAFF or
+        0x2600 <= cp <= 0x26FF or
+        0x2700 <= cp <= 0x27BF or
+        cp in {
+            0x00A9, 0x00AE, 0x203C, 0x2049, 0x2122, 0x2139,
+            0x2194, 0x2195, 0x2196, 0x2197, 0x2198, 0x2199,
+            0x21A9, 0x21AA, 0x231A, 0x231B, 0x2328, 0x23CF,
+            0x23E9, 0x23EA, 0x23EB, 0x23EC, 0x23ED, 0x23EE,
+            0x23EF, 0x23F0, 0x23F1, 0x23F2, 0x23F3, 0x24C2,
+            0x25AA, 0x25AB, 0x25B6, 0x25C0, 0x25FB, 0x25FC,
+            0x25FD, 0x25FE, 0x2934, 0x2935, 0x2B05, 0x2B06,
+            0x2B07, 0x2B1B, 0x2B1C, 0x2B50, 0x2B55, 0x3030,
+            0x303D, 0x3297, 0x3299,
+        }
+    )
+
+
+def consume_emoji_sequence(text: str, start: int) -> str:
+    if start >= len(text):
+        return ""
+
+    first = text[start]
+    if is_keycap_base(first):
+        end = start + 1
+        if end < len(text) and is_variation_selector(text[end]):
+            end += 1
+        if end < len(text) and ord(text[end]) == 0x20E3:
+            return text[start:end + 1]
+        return ""
+
+    if is_regional_indicator(first):
+        if start + 1 < len(text) and is_regional_indicator(text[start + 1]):
+            return text[start:start + 2]
+        return ""
+
+    if not is_emoji_base_char(first):
+        return ""
+
+    end = start + 1
+    while end < len(text):
+        ch = text[end]
+        if is_variation_selector(ch) or is_skin_tone_modifier(ch):
+            end += 1
+            continue
+        if ord(ch) == 0x200D:
+            end += 1
+            if end < len(text):
+                end += 1
+            continue
+        break
+    return text[start:end]
+
+
+def iter_text_and_emoji_fragments(text: str) -> List[Dict[str, str]]:
+    fragments: List[Dict[str, str]] = []
+    text_buf: List[str] = []
+    idx = 0
+
+    def flush_text() -> None:
+        if text_buf:
+            fragments.append({"kind": "text", "value": "".join(text_buf)})
+            text_buf.clear()
+
+    while idx < len(text):
+        emoji_seq = consume_emoji_sequence(text, idx)
+        if emoji_seq:
+            flush_text()
+            fragments.append({"kind": "emoji", "value": emoji_seq})
+            idx += len(emoji_seq)
+            continue
+        text_buf.append(text[idx])
+        idx += 1
+
+    flush_text()
+    return fragments
+
+
+def twemoji_codepoint_name(value: str, include_variation_selectors: bool = True) -> str:
+    codepoints = []
+    for ch in value:
+        cp = ord(ch)
+        if not include_variation_selectors and cp == 0xFE0F:
+            continue
+        codepoints.append(f"{cp:x}")
+    return "-".join(codepoints)
+
+
+def fetch_twemoji_asset(emoji_text: str) -> Optional[Path]:
+    cache_dir = emoji_cache_dir()
+    primary = twemoji_codepoint_name(emoji_text, include_variation_selectors=True)
+    fallback = twemoji_codepoint_name(emoji_text, include_variation_selectors=False)
+    candidates = [primary]
+    if fallback and fallback != primary:
+        candidates.append(fallback)
+
+    for candidate in candidates:
+        target = cache_dir / f"{candidate}.png"
+        if target.exists() and target.stat().st_size > 0:
+            return target
+        try:
+            download_file(f"{TWEMOJI_BASE_URL}/{candidate}.png", target, max_bytes=256 * 1024)
+            if target.exists() and target.stat().st_size > 0:
+                return target
+        except Exception:
+            continue
+    return None
+
+
+def load_emoji_image(emoji_text: str, size: int) -> Optional[Image.Image]:
+    asset_path = fetch_twemoji_asset(emoji_text)
+    if not asset_path:
+        return None
+    try:
+        with Image.open(asset_path) as im:
+            return im.convert("RGBA").resize((size, size), Image.LANCZOS)
+    except Exception:
+        return None
+
+
 def overlay_layout(width: int, height: int, text: str) -> Dict[str, Any]:
     normalized = normalize_overlay_text(text)
     if not normalized:
@@ -470,7 +617,8 @@ def render_text_image(
     image = Image.new("RGB", (width, height), color="black")
     draw = ImageDraw.Draw(image)
     font = ImageFont.truetype(str(overlay_font_path()), layout["font_size"])
-    line_step = layout["font_size"] + layout["line_spacing"]
+    emoji_size = layout["font_size"] + max(4, layout["font_size"] // 8)
+    line_step = max(layout["font_size"] + layout["line_spacing"], emoji_size + layout["line_spacing"])
     lines = layout["wrapped_text"].split("\n")
     total_text_height = len(lines) * line_step - layout["line_spacing"]
     start_y = max(0, (height - total_text_height) // 2)
@@ -480,8 +628,26 @@ def render_text_image(
         if not line:
             continue
         y = start_y + idx * line_step
-        bbox = draw.textbbox((0, 0), line, font=font)
-        draw.text((block_x - bbox[0], y - bbox[1]), line, font=font, fill="white")
+        cursor_x = block_x
+        baseline_y = y
+        for fragment in iter_text_and_emoji_fragments(line):
+            value = fragment["value"]
+            if fragment["kind"] == "emoji":
+                emoji_image = load_emoji_image(value, emoji_size)
+                if emoji_image is None:
+                    bbox = draw.textbbox((0, 0), value, font=font)
+                    draw.text((cursor_x - bbox[0], baseline_y - bbox[1]), value, font=font, fill="white")
+                    cursor_x += bbox[2] - bbox[0]
+                    continue
+
+                paste_y = baseline_y + max(0, (line_step - emoji_size) // 2)
+                image.paste(emoji_image, (int(cursor_x), int(paste_y)), emoji_image)
+                cursor_x += emoji_size
+                continue
+
+            bbox = draw.textbbox((0, 0), value, font=font)
+            draw.text((cursor_x - bbox[0], baseline_y - bbox[1]), value, font=font, fill="white")
+            cursor_x += bbox[2] - bbox[0]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path)

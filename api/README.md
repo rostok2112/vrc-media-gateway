@@ -4,7 +4,7 @@ This folder contains the FastAPI backend for VRChat Media Gateway.
 
 The backend is responsible for:
 
-- media download and conversion for YouTube, SoundCloud, Telegram, and images
+- media download and conversion for YouTube, SoundCloud, Telegram, images, and local media
 - websocket RPC for Spotify Desktop control
 - live HLS segment generation for Spotify
 - tunnel URL discovery from `logs/cloudflared.log`
@@ -14,6 +14,7 @@ The backend is responsible for:
 - FastAPI listens on `127.0.0.1:5000`
 - nginx on `127.0.0.1:8080` proxies `/api/*` and `/api/ws/*` to FastAPI
 - generated HLS output is written to `../html/streams/`
+- `/local-api/*` stays on loopback-only FastAPI and is intentionally outside the nginx/tunnel path
 
 For full-stack usage, start the project from the repository root with:
 
@@ -33,6 +34,9 @@ For full-stack usage, start the project from the repository root with:
 - `/api/stream-spotify-clear`
 - `/api/tunnel`
 - `/api/ws/spotify`
+- `/local-api/stream-local-path-build-start`
+- `/local-api/stream-local-upload-build-start`
+- `/local-api/stream-local-build-status`
 
 ## Telegram Config
 
@@ -69,3 +73,19 @@ Example:
 If those params are missing, the backend uses the defaults from `SPOTIFY_HLS_OPTS` in [`config.py`](./config.py).
 
 The Spicetify bridge stores those values in its `Streaming settings` section and sends them through the `VRChat` button and the Spotify cache-clear flow so different Spotify streaming presets do not share the same cache folder.
+
+## Local Media Note
+
+Local media ingestion is split out from the public API on purpose.
+
+- `/local-api/stream-local-path-build-start` accepts an absolute local filesystem path and only works when FastAPI is running on the same machine that can read that file
+- `/local-api/stream-local-upload-build-start` accepts raw uploaded file bytes for image, video, and audio media
+- `/local-api/stream-local-build-status` polls local build jobs
+
+Security rules for that path:
+
+- local media routes reject non-loopback callers
+- they are not intended to be proxied by nginx or exposed through Cloudflare Tunnel
+- browser file pickers and drag-and-drop should use upload, because browsers do not expose a trustworthy absolute local path
+
+The final playback URL still comes from `/streams/<sid>/index.m3u8`, but the local file ingestion step itself is local-only.

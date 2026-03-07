@@ -1,6 +1,6 @@
 # VRChat Media Gateway
 
-VRChat Media Gateway is a Windows-first toolkit for turning web media into VRChat-friendly HLS streams. The current project is  YouTube/SoundCloud/Spotify/Telegram/General media proxy: it now includes a browser extension, a Spicetify bridge for Spotify Desktop, a FastAPI backend, websocket RPC for Spotify control, and a segment engine that can stream live audio into HLS playlists.
+VRChat Media Gateway is a Windows-first toolkit for turning web, Telegram, Spotify, and local media into VRChat-friendly HLS streams. It includes a Chromium browser extension, a Spicetify bridge for Spotify Desktop, a FastAPI backend, websocket RPC for Spotify control, and an HLS segment engine for live Spotify capture.
 
 
 ## What It Includes
@@ -8,10 +8,12 @@ VRChat Media Gateway is a Windows-first toolkit for turning web media into VRCha
 - Browser extension in [`extension/`](./extension) with:
   - YouTube watch-page button
   - SoundCloud track-page button
-  - Telegram Web context-menu export for images and videos
-  - Spotify Web player buttons
-  - Generic image context-menu export on any site
-  - Settings popup with local/public endpoint handling
+- Telegram Web context-menu export for images and videos
+- Spotify Web player buttons
+- Generic image context-menu export on any site
+- Quick-link popup for URLs, pasted local paths, and dropped/selected local files
+- Long-running popup builds keep running in the extension background and resume when the popup is reopened
+- Settings popup with local/public endpoint handling
 - Spotify Desktop bridge in [`spotify_extension/`](./spotify_extension) for Spicetify:
   - `VRChat` button
   - `Clear cache` button
@@ -35,7 +37,8 @@ VRChat Media Gateway is a Windows-first toolkit for turning web media into VRCha
 | Generic images | Right-click any image on most sites and export it to a static HLS video |
 | Spotify Web | Injected buttons in `open.spotify.com` generate `/api/stream-spotify` links and allow cache clearing |
 | Spotify Desktop | Spicetify bridge talks to the backend over websocket, routes Spotify audio into a virtual cable, and writes live HLS segments |
-| Local files | Legacy/manual flow through [`run convertion.bat`](./run%20convertion.bat) using files from `input/` |
+| Local media in popup | The browser extension popup can build HLS links from selected or dropped local image/video/audio files, or from pasted absolute local paths when the API can see that file on the same machine |
+| Legacy local files | Manual flow through [`run convertion.bat`](./run%20convertion.bat) using files from `input/` |
 
 ## Platform Notes
 
@@ -73,16 +76,17 @@ pip install fastapi "uvicorn[standard]" requests python-dotenv telethon "qrcode[
 
 The normal runtime shape is:
 
-1. Browser extension or Spicetify bridge triggers an `/api/...` endpoint.
+1. Browser extension or Spicetify bridge triggers an `/api/...` endpoint, or a loopback-only `/local-api/...` endpoint for local file ingestion.
 2. nginx listens on `http://127.0.0.1:8080`, proxies `/api/*` and `/api/ws/*` to FastAPI on `127.0.0.1:5000`, and serves `html/streams/`.
-3. FastAPI downloads or captures media and writes HLS output into `html/streams/<sid>/`.
-4. VRChat receives the public HTTPS API URL from Cloudflare Tunnel, or a local URL for testing.
+3. FastAPI downloads, uploads, or captures media and writes HLS output into `html/streams/<sid>/`.
+4. VRChat receives the public HTTPS URL from Cloudflare Tunnel, or a local URL for testing.
 
 Important port split:
 
 - FastAPI listens on `127.0.0.1:5000`
 - nginx listens on `127.0.0.1:8080`
 - The browser extension and Spotify websocket bridge should point at `8080`, not `5000`
+- Exception: the browser extension popup talks to `127.0.0.1:5000/local-api/*` directly for local file uploads and local filesystem paths, so those routes never go through nginx or the public tunnel
 
 ## Setup
 
@@ -155,6 +159,8 @@ The popup supports:
 - `Use local API for processing`
 - local host and port
 - public tunnel URL auto-detection or manual override
+- local file choose/drop for image, video, and audio
+- pasted absolute local filesystem paths such as `C:\media\clip.mp4` or `file:///C:/media/clip.mp4`
 
 `Use local API for processing` means:
 
@@ -162,6 +168,13 @@ The popup supports:
 - the copied result still uses the public Cloudflare Tunnel URL
 
 That mode is useful when the tunnel is public but you want all downloading and transcoding to happen locally.
+
+Local media security model:
+
+- local file uploads and local path builds use loopback-only FastAPI routes under `/local-api/*`
+- those routes are intentionally not proxied by nginx and should not be exposed through the tunnel
+- file picker and drag-and-drop use upload, because browsers do not expose a trustworthy absolute filesystem path
+- pasted local paths only work when FastAPI is running on the same machine and can read that path directly
 
 ### 5. Prepare Spotify Desktop streaming
 
@@ -251,8 +264,9 @@ Site-specific behavior on the current branch:
 - Telegram Web: adds a `VRChat` entry to the message context menu and uses Telegram media auto-detection
 - Spotify Web: adds `VRChat` and `Clear cache` buttons near the player controls
 - Generic images: adds a `VRChat` item to the browser image context menu
+- Popup quick-link: can build ready links from remote URLs, selected/dropped local media, and pasted absolute local paths
 
-The popup can also be used as a manual "paste URL -> get export link" tool.
+Managed popup flows now wait for the stream to be ready, keep running if the popup closes, and usually copy the final `/streams/<sid>/index.m3u8` URL instead of a still-building `/api/stream-*` URL.
 
 ## API Overview
 
@@ -268,6 +282,12 @@ Main HTTP endpoints:
 - `POST /api/stream-spotify-clear?url=<spotify-track-url>&segment_time=<seconds>&prefetch=<count>`
 - `GET /api/tunnel`
 
+Local-only endpoints:
+
+- `POST /local-api/stream-local-path-build-start`
+- `POST /local-api/stream-local-upload-build-start`
+- `GET /local-api/stream-local-build-status?job_id=<job-id>`
+
 Spotify-specific delivery endpoints:
 
 - `GET /api/stream-spotify-playlist/{sid}`
@@ -278,7 +298,8 @@ Behavior notes:
 
 - Most VOD endpoints build the stream on first request and then serve cached HLS from `html/streams/<sid>/`
 - Spotify is segment-driven and uses the websocket bridge for metadata, seeking, playback start, cache clearing, and audio restoration
-- The API endpoints are the stable links you usually want to copy into VRChat, not the raw `/streams/.../index.m3u8` file path
+- Managed popup flows usually resolve to the final `/streams/<sid>/index.m3u8` link after the build is ready
+- Local media ingestion uses `/local-api/*` only on loopback; the final playback URL is still served from `/streams/...`
 
 ## Legacy Local File Mode
 
@@ -337,6 +358,13 @@ This path is now the legacy/manual mode. The browser and API-driven flows are th
 - The new SoundCloud logic tries to capture the secret/private share URL instead of only the public permalink
 - Keep `cookies.txt` available if the backend needs authenticated access
 
+### Local media export fails
+
+- Start the FastAPI backend locally; the popup needs direct access to `127.0.0.1:5000` for `/local-api/*`
+- Pasted local paths must be absolute paths on the same machine as the backend
+- Picked or dropped files are uploaded locally first, so very large files can take time before HLS starts building
+- Only local image, video, and audio formats are accepted
+
 ### Cache cleanup
 
 - Use the Spotify `Clear cache` button for per-track resets
@@ -346,11 +374,11 @@ This path is now the legacy/manual mode. The browser and API-driven flows are th
 
 ```text
 api/                 FastAPI app, routers, websocket RPC, segment engine
-extension/           Browser extension for YouTube, SoundCloud, Telegram, Spotify Web, images
+extension/           Browser extension for YouTube, SoundCloud, Telegram, Spotify Web, images, and local media popup export
 spotify_extension/   Spicetify bridge for Spotify Desktop
 html/streams/        Generated HLS output served by nginx
 input/               Manual local-file input for legacy conversion mode
-output/              Temporary downloaded media and conversion artifacts
+output/              Temporary downloaded media, upload cache, and conversion artifacts
 logs/                cloudflared log and runtime logs
 ```
 

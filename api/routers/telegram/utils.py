@@ -1,5 +1,5 @@
-
 import re
+import mimetypes
 
 from pathlib import Path
 from typing import Optional, Tuple, Union
@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.custom.message import Message
-from telethon.tl.types import DocumentAttributeVideo, PeerChannel
+from telethon.tl.types import DocumentAttributeAnimated, DocumentAttributeVideo, PeerChannel
 
 from api import config, utils
 
@@ -100,11 +100,15 @@ def classify_tg_message(msg: Optional[Message]) -> Optional[str]:
 
     file = getattr(msg, "file", None)
     mime = getattr(file, "mime_type", None) or ""
+    if mime == "image/gif":
+        return "video"
     if mime.startswith("video/"):
         return "video"
 
     document = getattr(msg, "document", None)
     attributes = getattr(document, "attributes", []) or []
+    if any(isinstance(attr, DocumentAttributeAnimated) for attr in attributes):
+        return "video"
     if any(isinstance(attr, DocumentAttributeVideo) for attr in attributes):
         return "video"
 
@@ -137,7 +141,19 @@ async def download_tg_video(url: str) -> Path:
     if classify_tg_message(msg) != "video":
         raise RuntimeError("Media is not a video")
 
-    target = Path(config.OUTPUT) / f"{getattr(channel_entity, 'channel_id', str(channel_entity))}_{msg_id}.mp4"
+    suffix = ".mp4"
+    file_name = getattr(getattr(msg, "file", None), "name", "") or ""
+    if file_name:
+        guessed_suffix = Path(file_name).suffix.lower()
+        if guessed_suffix:
+            suffix = guessed_suffix
+    else:
+        mime = getattr(getattr(msg, "file", None), "mime_type", None) or ""
+        guessed_suffix = mimetypes.guess_extension(mime.split(";")[0].strip()) if mime else ""
+        if guessed_suffix:
+            suffix = guessed_suffix
+
+    target = Path(config.OUTPUT) / f"{getattr(channel_entity, 'channel_id', str(channel_entity))}_{msg_id}{suffix}"
     target.parent.mkdir(parents=True, exist_ok=True)
 
     expected_size = getattr(getattr(msg, "file", None), "size", None)

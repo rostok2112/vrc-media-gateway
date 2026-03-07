@@ -103,10 +103,6 @@ async def _ensure_tg_image_stream(
     media_kind: Optional[str] = None,
 ) -> str:
     url = _normalize_tg_url(url)
-    sid = utils.image_stream_sid(url, duration, width, height)
-
-    if _is_hls_ready(sid):
-        return sid
 
     if media_kind is None:
         try:
@@ -117,6 +113,10 @@ async def _ensure_tg_image_stream(
     if media_kind == "video":
         print("Telegram post is a video, routing image endpoint to video pipeline")
         return await _ensure_tg_video_stream(url)
+
+    sid = utils.image_stream_sid(url, duration, width, height)
+    if _is_hls_ready(sid):
+        return sid
 
     try:
         img = await telegram_utils.download_tg_photo(url)

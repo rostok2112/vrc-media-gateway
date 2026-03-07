@@ -11,6 +11,7 @@ VRChat Media Gateway is a Windows-first toolkit for turning web, Telegram, Spoti
 - Telegram Web context-menu export for images and videos
 - Spotify Web player buttons
 - Generic image context-menu export on any site
+- Generic video context-menu export on any site when the page exposes a direct video URL
 - Quick-link popup for URLs, pasted local paths, and dropped/selected local files
 - Long-running popup builds keep running in the extension background and resume when the popup is reopened
 - Settings popup with local/public endpoint handling
@@ -35,6 +36,7 @@ VRChat Media Gateway is a Windows-first toolkit for turning web, Telegram, Spoti
 | Telegram images | Telegram endpoints classify the Telegram post first, then use Telethon for the real media and HTML image parsing only as a photo fallback |
 | Telegram videos | Telegram Web context menu and direct API calls can auto-detect video posts, download them through Telethon, then convert them to HLS |
 | Generic images | Right-click any image on most sites and export it to a static HLS video |
+| Generic videos | Right-click a site video with a direct media URL and export it to HLS |
 | Spotify Web | Injected buttons in `open.spotify.com` generate `/api/stream-spotify` links and allow cache clearing |
 | Spotify Desktop | Spicetify bridge talks to the backend over websocket, routes Spotify audio into a virtual cable, and writes live HLS segments |
 | Local media in popup | The browser extension popup can build HLS links from selected or dropped local image/video/audio files, or from pasted absolute local paths when the API can see that file on the same machine |
@@ -265,6 +267,7 @@ Site-specific behavior on the current branch:
 - Telegram Web: adds a `VRChat` entry to the message context menu and uses Telegram media auto-detection
 - Spotify Web: adds `VRChat` and `Clear cache` buttons near the player controls
 - Generic images: adds a `VRChat` item to the browser image context menu
+- Generic videos: adds a `VRChat` item to the browser video context menu for direct video URLs
 - Popup quick-link: can build ready links from remote URLs, selected/dropped local media, and pasted absolute local paths
 
 Managed popup flows now wait for the stream to be ready, keep running if the popup closes, and usually copy the final `/streams/<sid>/index.m3u8` URL instead of a still-building `/api/stream-*` URL.
@@ -276,6 +279,7 @@ Main HTTP endpoints:
 - `GET /api/stream-yt?url=<youtube-url>`
 - `GET /api/stream-sc?url=<soundcloud-url>`
 - `GET /api/stream-image?url=<image-url>&duration=300&width=1280&height=720`
+- `GET /api/stream-video?url=<direct-video-url>&referer=<page-url>`
 - `GET /api/stream-tg-media?url=<telegram-post-url>`
 - `GET /api/stream-tg-image?url=<telegram-post-url>`
 - `GET /api/stream-tg-video?url=<telegram-post-url>`

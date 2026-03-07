@@ -4,7 +4,7 @@ This folder contains the FastAPI backend for VRChat Media Gateway.
 
 The backend is responsible for:
 
-- media download and conversion for YouTube, SoundCloud, Telegram, images, and local media
+- media download and conversion for YouTube, SoundCloud, Telegram, generic images/videos, and local media
 - websocket RPC for Spotify Desktop control
 - live HLS segment generation for Spotify
 - tunnel URL discovery from `logs/cloudflared.log`
@@ -27,6 +27,7 @@ For full-stack usage, start the project from the repository root with:
 - `/api/stream-yt`
 - `/api/stream-sc`
 - `/api/stream-image`
+- `/api/stream-video`
 - `/api/stream-tg-media`
 - `/api/stream-tg-image`
 - `/api/stream-tg-video`

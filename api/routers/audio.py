@@ -8,7 +8,7 @@ from api import config, utils
 
 router = APIRouter()
 
-GENERIC_AUDIO_LAYOUT_VERSION = "generic-audio-v1"
+GENERIC_AUDIO_LAYOUT_VERSION = "generic-audio-poster-v2"
 _AUDIO_BUILD_JOBS: Dict[str, Dict[str, Any]] = {}
 _AUDIO_BUILD_TASKS: Dict[str, asyncio.Task] = {}
 _AUDIO_BUILD_LOCK = asyncio.Lock()
@@ -108,28 +108,30 @@ def _build_audio_sync(
     sid: str,
     segment_time: Optional[int] = None,
 ) -> None:
-    m3u8 = out_dir / "index.m3u8"
-    hls = utils.hls_opts_with_segment_time(segment_time)
-
-    cmd = [
-        config.FFMPEG, "-y",
-        "-reconnect", "1",
-        "-reconnect_streamed", "1",
-        "-reconnect_delay_max", "5",
-        "-headers", _http_input_headers(referer),
-        "-i", url,
-        "-map", "0:a:0",
-        "-vn",
-        *utils.ffmpeg_audio_params(),
-        "-f", "hls",
-        "-hls_time", str(hls.get("hls_time", 4)),
-        "-hls_list_size", str(hls.get("hls_list_size", 0)),
-        "-hls_playlist_type", hls.get("hls_playlist_type", "vod"),
-        "-hls_flags", hls.get("hls_flags", "independent_segments"),
-        "-hls_base_url", f"/streams/{sid}/",
-        str(m3u8)
-    ]
-    utils.run_cmd(cmd)
+    headers = _http_input_headers(referer)
+    metadata = utils.extract_audio_source_metadata(
+        url,
+        input_headers=headers,
+        fallback_title="Web audio",
+    )
+    cover_path = utils.extract_audio_embedded_cover(
+        url,
+        out_dir / "audio_cover.png",
+        input_headers=headers,
+    )
+    utils.audio_to_hls_with_poster(
+        url,
+        out_dir,
+        sid,
+        title=metadata.get("title", ""),
+        performer=metadata.get("performer", ""),
+        cover_image=cover_path,
+        duration_seconds=metadata.get("duration"),
+        source_label="Web audio",
+        segment_time=segment_time,
+        input_headers=headers,
+        input_args=["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"],
+    )
 
 
 async def _ensure_audio_stream(url: str, referer: str, segment_time: Optional[int] = None) -> str:

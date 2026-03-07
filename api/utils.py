@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import locale
 import math
 import os
 from shutil import copyfile
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 IMAGE_EXPORT_LAYOUT_VERSION = "fit-pad-v1"
 VIDEO_HLS_LAYOUT_VERSION = "video-h264-v2"
 AUDIO_HLS_LAYOUT_VERSION = "audio-hls-v2"
+AUDIO_POSTER_LAYOUT_VERSION = "audio-poster-v2"
 GIF_EXPORT_LAYOUT_VERSION = "gif-motion-v1"
 POST_TEXT_EXPORT_LAYOUT_VERSION = "post-text-v7"
 DEFAULT_HLS_SEGMENT_TIME = int(config.HLS_OPTS.get("hls_time", 4))
@@ -44,7 +46,7 @@ TWEMOJI_BASE_URL = "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72
 # =========================
 
 def run_cmd(cmd: List[str], timeout: Optional[int] = None):
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    p = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout)
     if p.returncode != 0:
         raise RuntimeError(
             f"CMD FAILED:\n{' '.join(cmd)}\n\nSTDOUT:\n{p.stdout}\n\nSTDERR:\n{p.stderr}"
@@ -424,16 +426,22 @@ def video_to_hls(
 
 
 def audio_to_hls(
-    audio: Path,
+    audio: Union[str, Path],
     out_dir: Path,
     stream_id: str,
     segment_time: Optional[int] = None,
+    input_headers: str = "",
+    input_args: Optional[List[str]] = None,
 ):
     m3u8 = out_dir / "index.m3u8"
     hls = hls_opts_with_segment_time(segment_time)
 
-    cmd = [
-        config.FFMPEG, "-y",
+    cmd = [config.FFMPEG, "-y"]
+    if input_args:
+        cmd.extend(list(input_args))
+    if input_headers:
+        cmd.extend(["-headers", input_headers])
+    cmd.extend([
         "-i", str(audio),
         "-vn",
         *ffmpeg_audio_params(),
@@ -443,7 +451,7 @@ def audio_to_hls(
         "-hls_playlist_type", hls.get("hls_playlist_type", "vod"),
         "-hls_base_url", f"/streams/{stream_id}/",
         str(m3u8)
-    ]
+    ])
     run_cmd(cmd)
 
 
@@ -583,7 +591,7 @@ def render_audio_poster(
 
 
 def audio_to_hls_with_poster(
-    audio: Path,
+    audio: Union[str, Path],
     out_dir: Path,
     stream_id: str,
     *,
@@ -595,6 +603,8 @@ def audio_to_hls_with_poster(
     height: int = 720,
     source_label: str = "Telegram audio",
     segment_time: Optional[int] = None,
+    input_headers: str = "",
+    input_args: Optional[List[str]] = None,
 ):
     m3u8 = out_dir / "index.m3u8"
     poster = out_dir / "audio_poster.png"
@@ -614,6 +624,12 @@ def audio_to_hls_with_poster(
         config.FFMPEG, "-y",
         "-loop", "1",
         "-i", str(poster),
+    ]
+    if input_args:
+        cmd.extend(list(input_args))
+    if input_headers:
+        cmd.extend(["-headers", input_headers])
+    cmd.extend([
         "-i", str(audio),
         "-map", "0:v:0",
         "-map", "1:a:0",
@@ -633,8 +649,162 @@ def audio_to_hls_with_poster(
         "-hls_flags", hls.get("hls_flags", "independent_segments"),
         "-hls_base_url", f"/streams/{stream_id}/",
         str(m3u8)
-    ]
+    ])
     run_cmd(cmd)
+
+
+def probe_media_json(
+    source: Union[str, Path],
+    input_headers: str = "",
+) -> Dict[str, Any]:
+    cmd = [
+        ffprobe_binary(),
+        "-v", "error",
+        "-print_format", "json",
+        "-show_format",
+        "-show_streams",
+    ]
+    if input_headers:
+        cmd.extend(["-headers", input_headers])
+    cmd.append(str(source))
+
+    try:
+        probe = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+    except Exception:
+        return {}
+
+    stdout = probe.stdout or b""
+    if probe.returncode != 0 or not stdout.strip():
+        return {}
+
+    preferred_encoding = locale.getpreferredencoding(False) or "utf-8"
+    decoded_stdout = None
+    for encoding in ("utf-8", "utf-8-sig", preferred_encoding, "cp1251"):
+        try:
+            decoded_stdout = stdout.decode(encoding)
+            break
+        except Exception:
+            continue
+
+    if not decoded_stdout:
+        decoded_stdout = stdout.decode("utf-8", errors="replace")
+
+    try:
+        return json.loads(decoded_stdout)
+    except Exception:
+        return {}
+
+
+def media_tags_from_probe(probe: Dict[str, Any]) -> Dict[str, str]:
+    tags: Dict[str, str] = {}
+    if not probe:
+        return tags
+
+    for container in [probe.get("format", {})] + list(probe.get("streams", []) or []):
+        for key, value in (container.get("tags", {}) or {}).items():
+            lowered = str(key or "").strip().lower()
+            if lowered and value not in {None, ""} and lowered not in tags:
+                tags[lowered] = str(value).strip()
+    return tags
+
+
+def media_tag_value(tags: Dict[str, str], *keys: str) -> str:
+    for key in keys:
+        value = str(tags.get(str(key).lower(), "")).strip()
+        if value:
+            return value
+    return ""
+
+
+def fallback_media_title(source: Union[str, Path], fallback: str = "Audio") -> str:
+    if isinstance(source, Path):
+        return source.stem or fallback
+
+    value = str(source or "").strip()
+    if not value:
+        return fallback
+
+    parsed = urlparse(value)
+    path = parsed.path or value
+    stem = Path(path).stem
+    return stem or fallback
+
+
+def extract_audio_source_metadata(
+    source: Union[str, Path],
+    *,
+    input_headers: str = "",
+    fallback_title: str = "Audio",
+) -> Dict[str, Any]:
+    probe = probe_media_json(source, input_headers=input_headers)
+    tags = media_tags_from_probe(probe)
+    format_block = probe.get("format", {}) if probe else {}
+
+    title = media_tag_value(tags, "title", "tit2", "track") or fallback_media_title(source, fallback_title)
+    performer = media_tag_value(
+        tags,
+        "artist",
+        "performer",
+        "album_artist",
+        "albumartist",
+        "tpe1",
+    )
+    duration_text = format_block.get("duration", "")
+    try:
+        duration = max(0.0, float(duration_text))
+    except (TypeError, ValueError):
+        duration = 0.0
+
+    has_cover_stream = any(
+        str(stream.get("codec_type", "")).lower() == "video"
+        for stream in (probe.get("streams", []) or [])
+    )
+    return {
+        "title": title,
+        "performer": performer,
+        "duration": duration,
+        "has_cover_stream": has_cover_stream,
+    }
+
+
+def extract_audio_embedded_cover(
+    source: Union[str, Path],
+    output_path: Path,
+    *,
+    input_headers: str = "",
+) -> Optional[Path]:
+    metadata = extract_audio_source_metadata(source, input_headers=input_headers)
+    if not metadata.get("has_cover_stream"):
+        return None
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.exists() and output_path.stat().st_size > 0:
+        return output_path
+
+    cmd = [config.FFMPEG, "-y"]
+    if input_headers:
+        cmd.extend(["-headers", input_headers])
+    cmd.extend([
+        "-i", str(source),
+        "-an",
+        "-map", "0:v:0",
+        "-frames:v", "1",
+        str(output_path),
+    ])
+
+    try:
+        run_cmd(cmd, timeout=60)
+    except Exception:
+        return None
+
+    if output_path.exists() and output_path.stat().st_size > 0:
+        return output_path
+    return None
 
 
 def normalize_overlay_text(text: Any) -> str:

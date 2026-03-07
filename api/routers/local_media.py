@@ -223,7 +223,8 @@ def _local_media_sid(
     if media_kind == "video":
         parts.append(utils.VIDEO_HLS_LAYOUT_VERSION)
     if media_kind == "audio":
-        parts.append(utils.AUDIO_HLS_LAYOUT_VERSION)
+        parts.append(utils.AUDIO_POSTER_LAYOUT_VERSION)
+        parts.append(f"{width}x{height}")
     if media_kind == "image":
         parts.append(f"{duration}")
         parts.append(f"{width}x{height}")
@@ -242,7 +243,8 @@ def _local_media_job_id(
     if media_kind == "video":
         parts.append(utils.VIDEO_HLS_LAYOUT_VERSION)
     if media_kind == "audio":
-        parts.append(utils.AUDIO_HLS_LAYOUT_VERSION)
+        parts.append(utils.AUDIO_POSTER_LAYOUT_VERSION)
+        parts.append(f"{width}x{height}")
     if media_kind == "image":
         parts.append(f"{duration}")
         parts.append(f"{width}x{height}")
@@ -269,7 +271,24 @@ def _build_local_media_sync(
     if media_kind == "image":
         utils.build_hls_from_image(str(source_path), sid, duration, width, height, segment_time)
     elif media_kind == "audio":
-        utils.audio_to_hls(source_path, out_dir, sid, segment_time=segment_time)
+        metadata = utils.extract_audio_source_metadata(
+            source_path,
+            fallback_title=source_path.stem or "Local audio",
+        )
+        cover_path = utils.extract_audio_embedded_cover(source_path, out_dir / "audio_cover.png")
+        utils.audio_to_hls_with_poster(
+            source_path,
+            out_dir,
+            sid,
+            title=metadata.get("title", ""),
+            performer=metadata.get("performer", ""),
+            cover_image=cover_path,
+            duration_seconds=metadata.get("duration"),
+            width=width,
+            height=height,
+            source_label="Local audio",
+            segment_time=segment_time,
+        )
     elif media_kind == "video":
         utils.video_to_hls(source_path, out_dir, sid, segment_time=segment_time)
     else:

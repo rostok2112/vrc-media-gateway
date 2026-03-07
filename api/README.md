@@ -4,7 +4,7 @@ This folder contains the FastAPI backend for VRChat Media Gateway.
 
 The backend is responsible for:
 
-- media download and conversion for YouTube, SoundCloud, Telegram, generic images/audio/videos, and local media
+- media download and conversion for YouTube, SoundCloud, Telegram, generic images/audio/videos, animated GIF motion media, and local media
 - websocket RPC for Spotify Desktop control
 - live HLS segment generation for Spotify
 - tunnel URL discovery from `logs/cloudflared.log`
@@ -40,6 +40,11 @@ For full-stack usage, start the project from the repository root with:
 - `/local-api/stream-local-upload-build-start`
 - `/local-api/stream-local-build-status`
 - `/local-api/clear-cache-all`
+
+Animated GIF behavior:
+
+- generic `.gif` sources are treated as motion/video instead of the still-image path
+- Telegram animated GIF posts are classified as video-like media and converted through the Telegram video pipeline
 
 ## Telegram Config
 
@@ -90,6 +95,11 @@ Security rules for that path:
 
 - local media routes reject non-loopback callers
 - they are not intended to be proxied by nginx or exposed through Cloudflare Tunnel
-- browser file pickers and drag-and-drop should use upload, because browsers do not expose a trustworthy absolute local path
+- browser file pickers and drag-and-drop prefer filesystem handles when Chromium exposes them, and fall back to upload otherwise
+
+Large local upload note:
+
+- the backend upload ceiling is controlled by `LOCAL_UPLOAD_MAX_BYTES` in [`config.py`](./config.py)
+- the default is `256 GiB`, which is intended for very large local media uploads on the same machine
 
 The final playback URL still comes from `/streams/<sid>/index.m3u8`, but the local file ingestion step itself is local-only.

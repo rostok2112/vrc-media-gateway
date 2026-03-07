@@ -8,9 +8,9 @@ VRChat Media Gateway is a Windows-first toolkit for turning web, Telegram, Spoti
 - Browser extension in [`extension/`](./extension) with:
   - YouTube watch-page button
   - SoundCloud track-page button
-- Telegram Web context-menu export for images and videos
+- Telegram Web context-menu export for images, animated GIF posts, and videos
 - Spotify Web player buttons
-- Generic image context-menu export on any site
+- Generic image context-menu export on any site, with animated GIFs treated as motion video
 - Generic audio context-menu export on any site when the page exposes a direct audio URL
 - Generic video context-menu export on any site when the page exposes a direct video URL
 - Quick-link popup for URLs, pasted local paths, and dropped/selected local files
@@ -35,13 +35,13 @@ VRChat Media Gateway is a Windows-first toolkit for turning web, Telegram, Spoti
 | YouTube | Browser button or direct API call downloads via `yt-dlp`, uses Node-based JS challenge solving, then converts to HLS |
 | SoundCloud | Browser button appears only on track pages, preserves secret/private links when possible, downloads with `yt-dlp`, then converts to HLS |
 | Telegram images | Telegram endpoints classify the Telegram post first, then use Telethon for the real media and HTML image parsing only as a photo fallback |
-| Telegram videos | Telegram Web context menu and direct API calls can auto-detect video posts, download them through Telethon, then convert them to HLS |
-| Generic images | Right-click any image on most sites and export it to a static HLS video |
+| Telegram videos and GIFs | Telegram Web context menu and direct API calls can auto-detect video and animated GIF posts, download them through Telethon, then convert them to HLS |
+| Generic images | Right-click any still image on most sites and export it to a static HLS video |
 | Generic audio | Right-click a site audio element with a direct media URL and export it to HLS |
 | Generic videos | Right-click a site video with a direct media URL and export it to HLS |
 | Spotify Web | Injected buttons in `open.spotify.com` generate `/api/stream-spotify` links and allow cache clearing |
 | Spotify Desktop | Spicetify bridge talks to the backend over websocket, routes Spotify audio into a virtual cable, and writes live HLS segments |
-| Local media in popup | The browser extension popup can build HLS links from selected or dropped local image/video/audio files, or from pasted absolute local paths when the API can see that file on the same machine |
+| Local media in popup | The browser extension popup can build HLS links from selected or dropped local image/video/audio files, or from pasted absolute local paths when the API can see that file on the same machine; large files prefer direct filesystem handles when Chromium exposes them |
 | Legacy local files | Manual flow through [`run convertion.bat`](./run%20convertion.bat) using files from `input/` |
 
 ## Platform Notes
@@ -178,8 +178,8 @@ Local media security model:
 
 - local file uploads and local path builds use loopback-only FastAPI routes under `/local-api/*`
 - those routes are intentionally not proxied by nginx and should not be exposed through the tunnel
-- file picker and drag-and-drop use upload, because browsers do not expose a trustworthy absolute filesystem path
 - pasted local paths only work when FastAPI is running on the same machine and can read that path directly
+- file picker and drag-and-drop prefer the browser File System Access handle when Chromium exposes it, and fall back to local upload when they cannot
 
 ### 5. Prepare Spotify Desktop streaming
 
@@ -266,9 +266,9 @@ Site-specific behavior on the current branch:
 
 - YouTube: injects a `VRChat` button only on watch pages and survives SPA navigation
 - SoundCloud: injects only on real track pages, not artist/profile tabs
-- Telegram Web: adds a `VRChat` entry to the message context menu and uses Telegram media auto-detection
+- Telegram Web: adds a `VRChat` entry to the message context menu and uses Telegram media auto-detection, including animated GIF posts
 - Spotify Web: adds `VRChat` and `Clear cache` buttons near the player controls
-- Generic images: adds a `VRChat` item to the browser image context menu
+- Generic images: adds a `VRChat` item to the browser image context menu; animated GIF URLs are routed through the video exporter
 - Generic audio: adds a `VRChat` item to the browser audio context menu for direct audio URLs
 - Generic videos: adds a `VRChat` item to the browser video context menu for direct video URLs
 - Popup quick-link: can build ready links from remote URLs, selected/dropped local media, and pasted absolute local paths
@@ -310,6 +310,7 @@ Behavior notes:
 - Spotify is segment-driven and uses the websocket bridge for metadata, seeking, playback start, cache clearing, and audio restoration
 - Managed popup flows usually resolve to the final `/streams/<sid>/index.m3u8` link after the build is ready
 - Local media ingestion uses `/local-api/*` only on loopback; the final playback URL is still served from `/streams/...`
+- Animated GIFs are treated as motion media and end up on the video/HLS path instead of the still-image path
 
 ## Legacy Local File Mode
 
@@ -372,8 +373,9 @@ This path is now the legacy/manual mode. The browser and API-driven flows are th
 
 - Start the FastAPI backend locally; the popup needs direct access to `127.0.0.1:5000` for `/local-api/*`
 - Pasted local paths must be absolute paths on the same machine as the backend
-- Picked or dropped files are uploaded locally first, so very large files can take time before HLS starts building
+- Large picked or dropped files use filesystem handles when Chromium supports them; otherwise the popup falls back to local upload and that extra local copy can take time
 - Only local image, video, and audio formats are accepted
+- Animated GIFs are exported as motion video instead of a static image loop
 
 ### Cache cleanup
 

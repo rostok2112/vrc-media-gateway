@@ -45,14 +45,43 @@ def run_cmd(cmd: List[str], timeout: Optional[int] = None):
 
 
 def wait_hls_ready(out_dir: Path, timeout: int = 30) -> bool:
-    m3u8 = out_dir / "index.m3u8"
     start = time.time()
     while time.time() - start < timeout:
-        if m3u8.exists() and m3u8.stat().st_size > 200:
-            ts = list(out_dir.glob("*.ts"))
-            if ts and any(t.stat().st_size > 1024 for t in ts):
-                return True
+        if is_hls_output_ready(out_dir):
+            return True
         time.sleep(0.3)
+    return False
+
+
+def is_hls_output_ready(out_dir: Path) -> bool:
+    m3u8 = out_dir / "index.m3u8"
+    if not m3u8.exists() or m3u8.stat().st_size <= 0:
+        return False
+
+    try:
+        playlist = m3u8.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return False
+
+    if "#EXTM3U" not in playlist or "#EXTINF:" not in playlist:
+        return False
+
+    segment_lines = [
+        line.strip()
+        for line in playlist.splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    if not segment_lines:
+        return False
+
+    for line in segment_lines:
+        seg_name = Path(urlparse(line).path).name
+        if not seg_name:
+            continue
+        seg_path = out_dir / seg_name
+        if seg_path.exists() and seg_path.stat().st_size > 0:
+            return True
+
     return False
 
 

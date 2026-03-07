@@ -51,13 +51,7 @@ def _hls_response(sid: str) -> Response:
 
 
 def _is_hls_ready(sid: str) -> bool:
-    out_dir = config.STREAMS / sid
-    m3u8 = out_dir / "index.m3u8"
-    if not m3u8.exists() or m3u8.stat().st_size <= 200:
-        return False
-
-    ts_files = list(out_dir.glob("*.ts"))
-    return bool(ts_files and any(ts.stat().st_size > 1024 for ts in ts_files))
+    return utils.is_hls_output_ready(config.STREAMS / sid)
 
 
 def _tg_build_job_id(url: str, duration: int, width: int, height: int) -> str:

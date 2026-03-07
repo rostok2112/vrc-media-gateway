@@ -4,7 +4,7 @@ This folder contains the FastAPI backend for VRChat Media Gateway.
 
 The backend is responsible for:
 
-- media download and conversion for YouTube, SoundCloud, Telegram, generic images/audio/videos, animated GIF motion media, and local media
+- media download and conversion for YouTube, SoundCloud, Telegram photos/videos/stickers, generic images/audio/videos, animated GIF motion media, and local media
 - websocket RPC for Spotify Desktop control
 - live HLS segment generation for Spotify
 - tunnel URL discovery from `logs/cloudflared.log`
@@ -47,6 +47,12 @@ Animated GIF behavior:
 - generic `.gif` sources are treated as motion/video instead of the still-image path
 - Telegram animated GIF posts are classified as video-like media and converted through the Telegram video pipeline
 
+Telegram sticker behavior:
+
+- static Telegram stickers such as `.webp` are classified as image media and converted through the Telegram image path
+- `video/webm` Telegram stickers are classified as video media and converted through the Telegram video path
+- animated `.tgs` Telegram stickers are rendered through `rlottie_python`, converted to motion media, and then sent through the Telegram video path
+
 Telegram post-text behavior:
 
 - `/api/stream-tg-media`, `/api/stream-tg-image`, and `/api/stream-tg-video` accept optional `with_text=1`
@@ -68,6 +74,10 @@ Non-Spotify HLS tuning:
 - `/local-api/stream-local-upload-build-start`
 
 Those routes accept optional `segment_time=<seconds>`. If the param is missing, the backend uses the default from `HLS_OPTS` in [`config.py`](./config.py). The browser extension popup now stores that value in its own `Streaming settings` section and sends it for non-Spotify exports.
+
+Python dependency note:
+
+- `rlottie_python` is required for animated Telegram `.tgs` sticker export
 
 ## Telegram Config
 

@@ -7,6 +7,7 @@
   const TELEGRAM_BUILD_MAX_WAIT_MS = 15 * 60 * 1000;
 
   let lastContextMessage = null;
+  const postInfoCache = new Map();
 
   document.addEventListener(
     "contextmenu",
@@ -137,6 +138,25 @@
     });
   }
 
+  async function fetchTelegramPostInfoForUrl(postUrl) {
+    const normalized = String(postUrl || "").trim();
+    if (!normalized) {
+      return null;
+    }
+    if (postInfoCache.has(normalized)) {
+      return postInfoCache.get(normalized);
+    }
+    const result = await sendMessage({
+      action: "fetchTelegramPostInfo",
+      url: normalized,
+    });
+    if (!result || result.error) {
+      throw new Error(result?.error || "Failed to inspect Telegram post");
+    }
+    postInfoCache.set(normalized, result);
+    return result;
+  }
+
   function messageHasTextContent(message) {
     if (!message) return false;
 
@@ -183,6 +203,22 @@
     ];
 
     return mediaSelectors.some(selector => Boolean(message.querySelector(selector)));
+  }
+
+  async function resolveContextPostInfo() {
+    const data = resolveMessageUrl();
+    if (!data) {
+      return null;
+    }
+
+    let { postUrl, channelId, messageId } = data;
+    const internal = buildInternalFromPeer(channelId);
+    const publicBase = await resolvePublicUsername(internal);
+    if (publicBase) {
+      postUrl = publicBase.replace(/\/$/, "") + "/" + messageId;
+    }
+
+    return await fetchTelegramPostInfoForUrl(postUrl);
   }
 
   async function waitForTelegramReady(postUrl, withText = false) {
@@ -273,6 +309,22 @@
     return item;
   }
 
+  function findCopyLinkAnchor(menu) {
+    const items = [...menu.children];
+    return (
+      items.find(el => {
+        const text = String(el.textContent || "").toLowerCase().trim();
+        if (!text) {
+          return false;
+        }
+        const looksLikeCopy = /copy|копіювати|копировать/.test(text);
+        const looksLikeLink = /link|посилан|ссыл/.test(text);
+        return looksLikeCopy && looksLikeLink;
+      }) ||
+      null
+    );
+  }
+
   function insertIfNeeded(menu) {
     if (menu.querySelector("." + ITEM_CLASS) || menu.querySelector("." + ITEM_WITH_TEXT_CLASS)) return;
     const hasMedia = messageHasStreamableMedia(lastContextMessage);
@@ -308,8 +360,74 @@
     }
   }
 
+  async function insertIfNeededResolved(menu) {
+    if (
+      menu.querySelector("." + ITEM_CLASS) ||
+      menu.querySelector("." + ITEM_WITH_TEXT_CLASS) ||
+      menu.dataset.vrchatInsertPending === "1"
+    ) {
+      return;
+    }
+
+    menu.dataset.vrchatInsertPending = "1";
+
+    let hasMedia = messageHasStreamableMedia(lastContextMessage);
+    let hasText = messageHasTextContent(lastContextMessage);
+
+    try {
+      const info = await resolveContextPostInfo();
+      if (info) {
+        hasMedia = Boolean(info.media_kind);
+        hasText = Boolean(info.has_text || info.post_text);
+      }
+    } catch (e) {
+      console.log("[VRChat TG] post-info inspect failed:", e && e.message);
+    }
+
+    if (!hasMedia && !hasText) {
+      delete menu.dataset.vrchatInsertPending;
+      return;
+    }
+
+    if (menu.querySelector("." + ITEM_CLASS) || menu.querySelector("." + ITEM_WITH_TEXT_CLASS)) {
+      delete menu.dataset.vrchatInsertPending;
+      return;
+    }
+
+    const items = [];
+    if (hasMedia) {
+      items.push(createMenuItem("VRChat", ITEM_CLASS, false));
+    }
+    if (hasText) {
+      items.push(createMenuItem("VRChat with post text", ITEM_WITH_TEXT_CLASS, true));
+    }
+
+    if (!items.length) {
+      delete menu.dataset.vrchatInsertPending;
+      return;
+    }
+
+    const anchor = findCopyLinkAnchor(menu);
+    if (anchor) {
+      let currentAnchor = anchor;
+      for (const item of items) {
+        currentAnchor.after(item);
+        currentAnchor = item;
+      }
+      delete menu.dataset.vrchatInsertPending;
+      return;
+    }
+
+    for (const item of items) {
+      menu.appendChild(item);
+    }
+    delete menu.dataset.vrchatInsertPending;
+  }
+
   new MutationObserver(() => {
-    document.querySelectorAll("." + MENU_CLASS).forEach(insertIfNeeded);
+    document.querySelectorAll("." + MENU_CLASS).forEach(menu => {
+      void insertIfNeededResolved(menu);
+    });
   }).observe(document.body, { childList: true, subtree: true });
 
   const style = document.createElement("style");

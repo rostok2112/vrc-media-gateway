@@ -1184,6 +1184,17 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
       return;
     }
 
+    if (msg.action === "fetchTelegramPostInfo") {
+      try {
+        const result = await fetchTelegramPostInfo(msg.url);
+        sendResponse(result || null);
+      } catch (e) {
+        console.log("[bg] fetchTelegramPostInfo message error:", e && e.message);
+        sendResponse({ error: e && e.message });
+      }
+      return;
+    }
+
     if (msg.action === "startManagedBuild") {
       try {
         const result = await startManagedBuild(msg.endpoint);

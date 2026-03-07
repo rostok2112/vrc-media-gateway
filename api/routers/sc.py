@@ -1,6 +1,9 @@
 import asyncio
+import json
 import subprocess
+from pathlib import Path
 from typing import Any, Dict, Optional
+import urllib.parse as urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Response
 
@@ -9,6 +12,7 @@ from api import config, utils
 
 router = APIRouter()
 
+SC_AUDIO_LAYOUT_VERSION = "soundcloud-poster-v1"
 _SC_BUILD_JOBS: Dict[str, Dict[str, Any]] = {}
 _SC_BUILD_TASKS: Dict[str, asyncio.Task] = {}
 _SC_BUILD_LOCK = asyncio.Lock()
@@ -28,8 +32,28 @@ async def clear_sc_build_jobs() -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def normalize_sc_url(url: str) -> str:
+    parsed = urlparse.urlparse(str(url or "").strip())
+    if not parsed.scheme:
+        return url
+
+    filtered_query = [
+        (key, value)
+        for key, value in urlparse.parse_qsl(parsed.query, keep_blank_values=True)
+        if not key.lower().startswith("utm_") and key.lower() != "si"
+    ]
+    return urlparse.urlunparse((
+        parsed.scheme,
+        parsed.netloc,
+        parsed.path,
+        parsed.params,
+        urlparse.urlencode(filtered_query, doseq=True),
+        "",
+    ))
+
+
 def _sc_sid(url: str, segment_time: Optional[int] = None) -> str:
-    return utils.audio_stream_sid(url, "soundcloud", segment_time=segment_time)
+    return utils.audio_stream_sid(url, "soundcloud", SC_AUDIO_LAYOUT_VERSION, segment_time=segment_time)
 
 
 def _stream_path_for_sid(sid: str) -> str:
@@ -48,7 +72,7 @@ def _is_hls_ready(sid: str) -> bool:
 
 
 def _sc_job_id(url: str, segment_time: Optional[int] = None) -> str:
-    return utils.audio_build_job_id(url, "sc-build", "soundcloud", segment_time=segment_time)
+    return utils.audio_build_job_id(url, "sc-build", "soundcloud", SC_AUDIO_LAYOUT_VERSION, segment_time=segment_time)
 
 
 def _job_snapshot(job_id: str) -> Optional[Dict[str, Any]]:
@@ -64,14 +88,29 @@ def _job_snapshot(job_id: str) -> Optional[Dict[str, Any]]:
     return snapshot
 
 
-def _build_sc_sync(
-    url: str,
-    out_dir,
-    sid: str,
-    segment_time: Optional[int] = None,
-) -> None:
-    audio_out = out_dir / "audio.m4a"
+def _run_ytdlp_capture_json(url: str) -> Dict[str, Any]:
+    base_cmd = [config.YTDLP, "--dump-single-json", "--no-playlist", url]
+    commands = []
+    if config.COOKIES.exists():
+        commands.append([config.YTDLP, "--cookies", str(config.COOKIES), "--dump-single-json", "--no-playlist", url])
+    commands.append(base_cmd)
 
+    last_error: Optional[subprocess.CalledProcessError] = None
+    for cmd in commands:
+        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, errors="replace", timeout=120)
+        if proc.returncode == 0:
+            try:
+                return json.loads(proc.stdout or "{}")
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"yt-dlp metadata parse failed: {e}")
+        last_error = subprocess.CalledProcessError(proc.returncode, cmd, output=proc.stdout, stderr=proc.stderr)
+
+    if last_error:
+        raise HTTPException(status_code=500, detail=f"yt-dlp metadata failed: {(last_error.stderr or '')[:2000]}")
+    raise HTTPException(status_code=500, detail="yt-dlp metadata failed")
+
+
+def _download_sc_audio(url: str, audio_out: Path) -> None:
     if not audio_out.exists() or audio_out.stat().st_size == 0:
         base_cmd = [config.YTDLP, "-f", "bestaudio", "-o", str(audio_out), url]
         if config.COOKIES.exists():
@@ -85,10 +124,86 @@ def _build_sc_sync(
         else:
             subprocess.run(base_cmd, check=True)
 
-    utils.audio_to_hls(audio_out, out_dir, sid, segment_time=segment_time)
+
+def _best_thumbnail_url(info: Dict[str, Any]) -> str:
+    thumbnails = list(info.get("thumbnails") or [])
+    best = ""
+    best_score = -1
+    for thumb in thumbnails:
+        thumb_url = str((thumb or {}).get("url") or "").strip()
+        if not thumb_url:
+            continue
+        width = int((thumb or {}).get("width") or 0)
+        height = int((thumb or {}).get("height") or 0)
+        pref = int((thumb or {}).get("preference") or 0)
+        score = max(width, height) * 100 + pref
+        if score > best_score:
+            best = thumb_url
+            best_score = score
+
+    if best:
+        return best
+    return str(info.get("thumbnail") or "").strip()
+
+
+def _download_sc_cover(info: Dict[str, Any], out_dir: Path) -> Optional[Path]:
+    thumb_url = _best_thumbnail_url(info)
+    if not thumb_url:
+        return None
+
+    suffix = Path(urlparse.urlparse(thumb_url).path or "").suffix.lower() or ".jpg"
+    cover_path = out_dir / f"audio_cover{suffix}"
+    if cover_path.exists() and cover_path.stat().st_size > 0:
+        return cover_path
+
+    try:
+        return utils.download_file(thumb_url, cover_path, max_bytes=16 * 1024 * 1024)
+    except Exception:
+        return None
+
+
+def _sc_title(info: Dict[str, Any]) -> str:
+    return (
+        str(info.get("track") or "").strip()
+        or str(info.get("title") or "").strip()
+        or "SoundCloud track"
+    )
+
+
+def _sc_performer(info: Dict[str, Any]) -> str:
+    return (
+        str(info.get("artist") or "").strip()
+        or str(info.get("uploader") or "").strip()
+        or str(info.get("creator") or "").strip()
+        or str(info.get("channel") or "").strip()
+    )
+
+
+def _build_sc_sync(
+    url: str,
+    out_dir,
+    sid: str,
+    segment_time: Optional[int] = None,
+) -> None:
+    info = _run_ytdlp_capture_json(url)
+    audio_out = out_dir / "audio.m4a"
+    _download_sc_audio(url, audio_out)
+    cover_path = _download_sc_cover(info, out_dir)
+    utils.audio_to_hls_with_poster(
+        audio_out,
+        out_dir,
+        sid,
+        title=_sc_title(info),
+        performer=_sc_performer(info),
+        cover_image=cover_path,
+        duration_seconds=info.get("duration"),
+        source_label="SoundCloud",
+        segment_time=segment_time,
+    )
 
 
 async def _ensure_sc_stream(url: str, segment_time: Optional[int] = None) -> str:
+    url = normalize_sc_url(url)
     segment_time = utils.normalize_hls_segment_time(segment_time)
     sid = _sc_sid(url, segment_time)
     if _is_hls_ready(sid):
@@ -131,6 +246,7 @@ async def _run_sc_build_job(job_id: str, url: str, segment_time: Optional[int]) 
 
 
 async def _ensure_sc_build_job(url: str, segment_time: Optional[int] = None) -> Dict[str, Any]:
+    url = normalize_sc_url(url)
     segment_time = utils.normalize_hls_segment_time(segment_time)
     sid = _sc_sid(url, segment_time)
     job_id = _sc_job_id(url, segment_time)

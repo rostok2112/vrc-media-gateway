@@ -4,7 +4,7 @@ This folder contains the FastAPI backend for VRChat Media Gateway.
 
 The backend is responsible for:
 
-- media download and conversion for YouTube, SoundCloud, Telegram photos/videos/stickers, generic images/audio/videos, animated GIF motion media, and local media
+- media download and conversion for YouTube, SoundCloud, Telegram photos/videos/stickers/music tracks/voice messages, generic images/audio/videos, animated GIF motion media, and local media
 - websocket RPC for Spotify Desktop control
 - live HLS segment generation for Spotify
 - tunnel URL discovery from `logs/cloudflared.log`
@@ -32,6 +32,7 @@ For full-stack usage, start the project from the repository root with:
 - `/api/stream-tg-media`
 - `/api/stream-tg-image`
 - `/api/stream-tg-video`
+- `/api/stream-tg-audio`
 - `/api/tg-post-info`
 - `/api/stream-spotify`
 - `/api/stream-spotify-clear`
@@ -53,6 +54,13 @@ Telegram sticker behavior:
 - `video/webm` Telegram stickers are classified as video media and converted through the Telegram video path
 - animated `.tgs` Telegram stickers are rendered through `rlottie_python`, converted to motion media, and then sent through the Telegram video path
 
+Telegram audio behavior:
+
+- Telegram music documents and Telegram voice messages are classified as audio media and converted through the Telegram audio path
+- `/api/stream-tg-audio` is the direct Telegram audio endpoint
+- `/api/stream-tg-media` auto-detects Telegram audio posts and routes them to the same audio pipeline
+- mono Telegram voice messages are preserved correctly when converted to stereo AAC HLS output
+
 Telegram post-text behavior:
 
 - `/api/stream-tg-media`, `/api/stream-tg-image`, and `/api/stream-tg-video` accept optional `with_text=1`
@@ -70,6 +78,7 @@ Non-Spotify HLS tuning:
 - `/api/stream-tg-media`
 - `/api/stream-tg-image`
 - `/api/stream-tg-video`
+- `/api/stream-tg-audio`
 - `/local-api/stream-local-path-build-start`
 - `/local-api/stream-local-upload-build-start`
 

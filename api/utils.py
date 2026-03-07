@@ -125,6 +125,34 @@ def is_probably_gif_source(source: Union[str, Path]) -> bool:
     return Path(candidate).suffix.lower() == ".gif"
 
 
+def infer_image_source_suffix(source: Union[str, Path]) -> str:
+    known = {".gif", ".webp", ".png", ".jpg", ".jpeg", ".bmp"}
+
+    if isinstance(source, Path):
+        suffix = source.suffix.lower()
+        return suffix if suffix in known else ".jpg"
+
+    value = str(source or "").strip()
+    if not value:
+        return ".jpg"
+
+    if value.lower().startswith("data:image/gif"):
+        return ".gif"
+    if value.lower().startswith("data:image/webp"):
+        return ".webp"
+    if value.lower().startswith("data:image/png"):
+        return ".png"
+    if value.lower().startswith("data:image/jpeg") or value.lower().startswith("data:image/jpg"):
+        return ".jpg"
+
+    parsed = urlparse(value)
+    candidate = parsed.path if parsed.scheme else value
+    suffix = Path(candidate).suffix.lower()
+    if suffix in known:
+        return suffix
+    return ".jpg"
+
+
 def is_gif_file(path: Path) -> bool:
     try:
         with path.open("rb") as fh:
@@ -1061,7 +1089,7 @@ def build_hls_from_image(
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    src_suffix = ".gif" if is_probably_gif_source(image_url) else ".jpg"
+    src_suffix = infer_image_source_suffix(Path(image_url) if Path(image_url).exists() else image_url)
     download_limit = 256 * 1024 * 1024 if src_suffix == ".gif" else 8 * 1024 * 1024
     img = out_dir / f"src{src_suffix}"
     mp4 = out_dir / "video.mp4"
@@ -1102,7 +1130,7 @@ def build_hls_from_image_with_text(
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    src_suffix = ".gif" if is_probably_gif_source(image_url) else ".jpg"
+    src_suffix = infer_image_source_suffix(Path(image_url) if Path(image_url).exists() else image_url)
     download_limit = 256 * 1024 * 1024 if src_suffix == ".gif" else 8 * 1024 * 1024
     img = out_dir / f"src{src_suffix}"
 

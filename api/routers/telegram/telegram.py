@@ -284,7 +284,7 @@ async def _ensure_tg_image_stream(
         return sid
 
     try:
-        img = await telegram_utils.download_tg_photo(url)
+        img = await telegram_utils.download_tg_image(url)
         if caption_value:
             await asyncio.to_thread(
                 utils.build_hls_from_image_with_text,

@@ -74,7 +74,7 @@ Optional but required for specific features:
 Install Python dependencies:
 
 ```powershell
-pip install fastapi "uvicorn[standard]" requests python-dotenv telethon "qrcode[pil]" psutil winappaudiorouter pillow
+pip install fastapi "uvicorn[standard]" requests python-dotenv telethon "qrcode[pil]" psutil winappaudiorouter pillow rlottie_python
 ```
 
 ## Architecture

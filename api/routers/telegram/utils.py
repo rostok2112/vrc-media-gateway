@@ -11,6 +11,7 @@ from telethon.tl.custom.message import Message
 from telethon.tl.types import (
     DocumentAttributeAnimated,
     DocumentAttributeFilename,
+    DocumentAttributeSticker,
     DocumentAttributeVideo,
     MessageEntityCustomEmoji,
     PeerChannel,
@@ -107,6 +108,13 @@ def classify_tg_message(msg: Optional[Message]) -> Optional[str]:
 
     file = getattr(msg, "file", None)
     mime = getattr(file, "mime_type", None) or ""
+    if getattr(msg, "sticker", None):
+        if mime == "application/x-tgsticker":
+            return "video"
+        if mime.startswith("video/"):
+            return "video"
+        if mime.startswith("image/"):
+            return "image"
     if mime == "image/gif":
         return "video"
     if mime.startswith("video/"):
@@ -114,6 +122,10 @@ def classify_tg_message(msg: Optional[Message]) -> Optional[str]:
 
     document = getattr(msg, "document", None)
     attributes = getattr(document, "attributes", []) or []
+    if any(isinstance(attr, DocumentAttributeSticker) for attr in attributes):
+        if any(isinstance(attr, (DocumentAttributeAnimated, DocumentAttributeVideo)) for attr in attributes):
+            return "video"
+        return "image"
     if any(isinstance(attr, DocumentAttributeAnimated) for attr in attributes):
         return "video"
     if any(isinstance(attr, DocumentAttributeVideo) for attr in attributes):
@@ -257,7 +269,6 @@ async def download_tg_video(url: str) -> Path:
       - https://t.me/username/<msg_id>
       - https://t.me/c/<channel_id>/<msg_id>
     """
-    channel_entity, msg_id = _parse_tg_post(url)
     client = await get_tg_client()
     msg = await get_tg_message(url)
 
@@ -279,6 +290,31 @@ async def download_tg_video(url: str) -> Path:
         if guessed_suffix:
             suffix = guessed_suffix
 
+    document = getattr(msg, "document", None)
+    if suffix == ".tgs" or getattr(getattr(msg, "file", None), "mime_type", None) == "application/x-tgsticker":
+        if not document:
+            raise RuntimeError("Animated sticker document is missing")
+        sticker_dir = Path(config.OUTPUT) / "_tg_stickers"
+        sticker_dir.mkdir(parents=True, exist_ok=True)
+        source_tgs = sticker_dir / f"{document.id}.tgs"
+        output_gif = sticker_dir / f"{document.id}.gif"
+        if output_gif.exists() and output_gif.stat().st_size > 0:
+            return output_gif
+        if not source_tgs.exists() or source_tgs.stat().st_size <= 0:
+            await client.download_media(msg, file=str(source_tgs))
+            utils.ensure_file(source_tgs)
+        try:
+            from rlottie_python import LottieAnimation
+        except Exception as e:
+            raise RuntimeError(f"rlottie_python is required for Telegram animated stickers: {e}")
+        anim = LottieAnimation.from_tgs(str(source_tgs))
+        fps = int(round(anim.lottie_animation_get_framerate() or 30))
+        fps = max(12, min(50, fps))
+        anim.save_animation(str(output_gif), fps=fps)
+        utils.ensure_file(output_gif)
+        return output_gif
+
+    channel_entity, msg_id = _parse_tg_post(url)
     target = Path(config.OUTPUT) / f"{getattr(channel_entity, 'channel_id', str(channel_entity))}_{msg_id}{suffix}"
     target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -293,20 +329,40 @@ async def download_tg_video(url: str) -> Path:
     return target
 
 
-async def download_tg_photo(url: str) -> Path:
-    _, msg_id = _parse_tg_post(url)
+async def download_tg_image(url: str) -> Path:
+    channel_entity, msg_id = _parse_tg_post(url)
     client = await get_tg_client()
     msg = await get_tg_message(url)
 
-    if not msg or not msg.photo:
-        raise RuntimeError("No photo in telegram post")
+    if not msg:
+        raise RuntimeError("Telegram post not found")
 
-    out = Path(config.OUTPUT) / f"tg_{msg_id}.jpg"
+    if msg.photo:
+        out = Path(config.OUTPUT) / f"tg_{msg_id}.jpg"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        await client.download_media(msg.photo, file=str(out))
+        utils.ensure_file(out)
+        return out
 
+    if classify_tg_message(msg) != "image":
+        raise RuntimeError("No image in telegram post")
+
+    file_name = getattr(getattr(msg, "file", None), "name", "") or ""
+    suffix = Path(file_name).suffix.lower() if file_name else ""
+    if not suffix:
+        mime = getattr(getattr(msg, "file", None), "mime_type", None) or ""
+        suffix = (mimetypes.guess_extension(mime.split(";")[0].strip()) if mime else "") or ".webp"
+
+    out = Path(config.OUTPUT) / f"{getattr(channel_entity, 'channel_id', str(channel_entity))}_{msg_id}{suffix}"
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    await client.download_media(msg.photo, file=str(out))
+    expected_size = getattr(getattr(msg, "file", None), "size", None)
+    if out.exists() and out.stat().st_size > 0:
+        if expected_size is None or out.stat().st_size == expected_size:
+            return out
 
+    await client.download_media(msg, file=str(out))
+    utils.ensure_file(out)
     return out
 
 

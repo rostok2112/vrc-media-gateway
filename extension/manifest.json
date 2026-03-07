@@ -2,7 +2,7 @@
     "manifest_version": 3,
     "name": "VRChat Media Gateway",
     "version": "1.0",
-    "description": "Adds VRChat export buttons and popup tools for YouTube, SoundCloud, Telegram, Spotify Web, and images.",
+    "description": "Adds VRChat export buttons and popup tools for YouTube, SoundCloud, Telegram, Spotify Web, images, and local media.",
     "permissions": [
       "contextMenus",
       "storage",

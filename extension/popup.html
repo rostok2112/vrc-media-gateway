@@ -100,6 +100,26 @@
     display: none;
   }
 
+  .drop-zone {
+    width: 100%;
+    min-height: 56px;
+    padding: 10px;
+    margin-bottom: 8px;
+    border: 1px dashed rgba(255,255,255,0.45);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-size: 13px;
+    background: rgba(255,255,255,0.05);
+  }
+
+  .drop-zone.active {
+    border-color: #4db8ff;
+    background: rgba(77,184,255,0.16);
+  }
+
   #status {
     font-size: 13px;
     margin-bottom: 6px;
@@ -111,6 +131,10 @@
 <body>
 
 <h3>Quick link</h3>
+
+<button id="pickFile" type="button">Choose local file</button>
+<input id="localFilePicker" type="file" accept="image/*,video/*,audio/*" hidden />
+<div id="dropZone" class="drop-zone">Drop a local image, video, or audio file here</div>
 
 <input id="input" placeholder="Paste source link…" />
 <input id="output" placeholder="Result API link…" readonly />

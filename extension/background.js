@@ -53,6 +53,7 @@ const LONG_BUILD_GRACE_MS = 20000;
 const TELEGRAM_BUILD_POLL_MS = 2000;
 const TELEGRAM_BUILD_MAX_WAIT_MS = 15 * 60 * 1000;
 const RETRYABLE_BUILD_STATUSES = new Set([408, 429, 502, 503, 504, 522, 523, 524]);
+const LOCAL_MEDIA_API_BASE = "http://127.0.0.1:5000";
 
 function isLongBuildEndpoint(endpoint) {
   return typeof endpoint === "string" && endpoint.startsWith("/api/stream-");
@@ -153,6 +154,23 @@ async function resolveManagedBuildBases() {
   if (!finalBase) throw new Error("No result base available");
 
   return { processBase, finalBase };
+}
+
+async function resolveLocalMediaBases() {
+  const { fetchBase, resultBase, localBase } = await resolveBases();
+  const finalBase = (resultBase || localBase || fetchBase || "").replace(/\/$/, "");
+  if (!finalBase) throw new Error("No result base available");
+
+  try {
+    const probe = await fetchWithGrace(`${LOCAL_MEDIA_API_BASE}/api/tunnel`, 1500);
+    if (!probe.ok) {
+      throw new Error(`HTTP ${probe.status}`);
+    }
+  } catch (e) {
+    throw new Error(`Local media API is not reachable on ${LOCAL_MEDIA_API_BASE}`);
+  }
+
+  return { processBase: LOCAL_MEDIA_API_BASE, finalBase };
 }
 
 async function startBuildWithConfig(endpoint, startPath) {
@@ -471,6 +489,17 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
         sendResponse(bases);
       } catch (e) {
         console.log("[bg] resolveBases error:", e && e.message);
+        sendResponse({ error: e && e.message });
+      }
+      return;
+    }
+
+    if (msg.action === "resolveLocalMediaBases") {
+      try {
+        const bases = await resolveLocalMediaBases();
+        sendResponse(bases);
+      } catch (e) {
+        console.log("[bg] resolveLocalMediaBases error:", e && e.message);
         sendResponse({ error: e && e.message });
       }
       return;

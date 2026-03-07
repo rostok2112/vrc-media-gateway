@@ -15,7 +15,7 @@ VRChat Media Gateway is a Windows-first toolkit for turning web, Telegram, Spoti
 - Generic video context-menu export on any site when the page exposes a direct video URL
 - Quick-link popup for URLs, pasted local paths, and dropped/selected local files
 - Long-running popup builds keep running in the extension background and resume when the popup is reopened
-- Settings popup with local/public endpoint handling
+- Settings popup with local/public endpoint handling and browser HLS segment duration control
 - Spotify Desktop bridge in [`spotify_extension/`](./spotify_extension) for Spicetify:
   - `VRChat` button
   - `Clear cache` button
@@ -275,6 +275,12 @@ Site-specific behavior on the current branch:
 
 Managed popup flows now wait for the stream to be ready, keep running if the popup closes, and usually copy the final `/streams/<sid>/index.m3u8` URL instead of a still-building `/api/stream-*` URL.
 
+The browser extension settings popup now also includes a `Streaming settings` section with:
+
+- segment duration in seconds for non-Spotify builds
+
+That value is appended as `segment_time=<seconds>` for YouTube, SoundCloud, Telegram, generic image/audio/video, and local media builds. If it is omitted, the backend falls back to the default value from [`api/config.py`](./api/config.py) `HLS_OPTS`.
+
 ## API Overview
 
 Main HTTP endpoints:
@@ -307,6 +313,7 @@ Spotify-specific delivery endpoints:
 Behavior notes:
 
 - Most VOD endpoints build the stream on first request and then serve cached HLS from `html/streams/<sid>/`
+- Non-Spotify VOD endpoints can also accept `segment_time=<seconds>` and use that value in both HLS generation and cache keys
 - Spotify is segment-driven and uses the websocket bridge for metadata, seeking, playback start, cache clearing, and audio restoration
 - Managed popup flows usually resolve to the final `/streams/<sid>/index.m3u8` link after the build is ready
 - Local media ingestion uses `/local-api/*` only on loopback; the final playback URL is still served from `/streams/...`

@@ -46,6 +46,21 @@ Animated GIF behavior:
 - generic `.gif` sources are treated as motion/video instead of the still-image path
 - Telegram animated GIF posts are classified as video-like media and converted through the Telegram video pipeline
 
+Non-Spotify HLS tuning:
+
+- `/api/stream-yt`
+- `/api/stream-sc`
+- `/api/stream-image`
+- `/api/stream-audio`
+- `/api/stream-video`
+- `/api/stream-tg-media`
+- `/api/stream-tg-image`
+- `/api/stream-tg-video`
+- `/local-api/stream-local-path-build-start`
+- `/local-api/stream-local-upload-build-start`
+
+Those routes accept optional `segment_time=<seconds>`. If the param is missing, the backend uses the default from `HLS_OPTS` in [`config.py`](./config.py). The browser extension popup now stores that value in its own `Streaming settings` section and sends it for non-Spotify exports.
+
 ## Telegram Config
 
 The backend loads `api/.env` first and falls back to the root environment if that file is missing.

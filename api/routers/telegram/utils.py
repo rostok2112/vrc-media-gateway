@@ -2,12 +2,19 @@ import re
 import mimetypes
 
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 from telethon import TelegramClient
+from telethon.tl.functions.messages import GetCustomEmojiDocumentsRequest
 from telethon.sessions import StringSession
 from telethon.tl.custom.message import Message
-from telethon.tl.types import DocumentAttributeAnimated, DocumentAttributeVideo, PeerChannel
+from telethon.tl.types import (
+    DocumentAttributeAnimated,
+    DocumentAttributeFilename,
+    DocumentAttributeVideo,
+    MessageEntityCustomEmoji,
+    PeerChannel,
+)
 
 from api import config, utils
 
@@ -124,6 +131,119 @@ async def get_tg_post_text(url: str) -> str:
     msg = await get_tg_message(url)
     text = getattr(msg, "raw_text", None) or getattr(msg, "message", None) or ""
     return str(text).strip()
+
+
+def _normalize_tg_text_for_entities(text: str) -> str:
+    return re.sub(r"\r\n?", "\n", str(text or ""))
+
+
+def _utf16_offset_to_index(text: str, offset: int) -> int:
+    utf16_units = 0
+    for idx, ch in enumerate(text):
+        if utf16_units >= offset:
+            return idx
+        utf16_units += 2 if ord(ch) > 0xFFFF else 1
+    return len(text)
+
+
+def _emoji_spans(text: str) -> List[Dict[str, Any]]:
+    spans: List[Dict[str, Any]] = []
+    idx = 0
+    seq_idx = 0
+    while idx < len(text):
+        emoji_seq = utils.consume_emoji_sequence(text, idx)
+        if emoji_seq:
+            spans.append({
+                "start": idx,
+                "end": idx + len(emoji_seq),
+                "emoji_text": emoji_seq,
+                "sequence_index": seq_idx,
+            })
+            seq_idx += 1
+            idx += len(emoji_seq)
+            continue
+        idx += 1
+    return spans
+
+
+def _document_suffix(document: Any) -> str:
+    for attr in getattr(document, "attributes", []) or []:
+        if isinstance(attr, DocumentAttributeFilename):
+            suffix = Path(getattr(attr, "file_name", "") or "").suffix.lower()
+            if suffix:
+                return suffix
+    mime = getattr(document, "mime_type", None) or ""
+    guessed = mimetypes.guess_extension(mime.split(";")[0].strip()) if mime else ""
+    if guessed:
+        return guessed.lower()
+    return ".bin"
+
+
+async def _download_custom_emoji_document(client: TelegramClient, document: Any) -> Path:
+    suffix = _document_suffix(document)
+    cache_dir = Path(config.OUTPUT) / "_tg_custom_emoji"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    target = cache_dir / f"{document.id}{suffix}"
+    expected_size = getattr(document, "size", None)
+    if target.exists() and target.stat().st_size > 0:
+        if expected_size is None or target.stat().st_size == expected_size:
+            return target
+    await client.download_media(document, file=str(target))
+    utils.ensure_file(target)
+    return target
+
+
+async def get_tg_post_text_payload(url: str) -> Dict[str, Any]:
+    msg = await get_tg_message(url)
+    raw_text = getattr(msg, "raw_text", None) or getattr(msg, "message", None) or ""
+    normalized_for_entities = _normalize_tg_text_for_entities(raw_text)
+    normalized_text = utils.normalize_overlay_text(normalized_for_entities)
+    payload: Dict[str, Any] = {
+        "text": normalized_text,
+        "custom_emojis": [],
+    }
+    if not normalized_text:
+        return payload
+
+    custom_entities = [
+        ent for ent in (getattr(msg, "entities", None) or [])
+        if isinstance(ent, MessageEntityCustomEmoji)
+    ]
+    if not custom_entities:
+        return payload
+
+    emoji_spans = _emoji_spans(normalized_for_entities)
+    if not emoji_spans:
+        return payload
+
+    client = await get_tg_client()
+    docs = await client(
+        GetCustomEmojiDocumentsRequest(document_id=[ent.document_id for ent in custom_entities])
+    )
+    docs_by_id = {doc.id: doc for doc in docs}
+
+    custom_items: List[Dict[str, Any]] = []
+    for ent in sorted(custom_entities, key=lambda item: getattr(item, "offset", 0)):
+        start_idx = _utf16_offset_to_index(normalized_for_entities, int(getattr(ent, "offset", 0)))
+        span = next((row for row in emoji_spans if row["start"] <= start_idx < row["end"]), None)
+        if not span:
+            continue
+        document = docs_by_id.get(ent.document_id)
+        if not document:
+            continue
+        asset_path = await _download_custom_emoji_document(client, document)
+        mime_type = getattr(document, "mime_type", None) or ""
+        custom_items.append({
+            "sequence_index": span["sequence_index"],
+            "emoji_text": span["emoji_text"],
+            "document_id": int(document.id),
+            "mime_type": mime_type,
+            "path": str(asset_path),
+            "animated": mime_type.startswith("video/") or asset_path.suffix.lower() in {".webm", ".mp4", ".mov"},
+        })
+
+    payload["custom_emojis"] = custom_items
+    return payload
 
 
 def html_contains_tg_video(html: str) -> bool:

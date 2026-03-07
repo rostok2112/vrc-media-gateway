@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 IMAGE_EXPORT_LAYOUT_VERSION = "fit-pad-v1"
 VIDEO_HLS_LAYOUT_VERSION = "video-h264-v2"
 GIF_EXPORT_LAYOUT_VERSION = "gif-motion-v1"
-POST_TEXT_EXPORT_LAYOUT_VERSION = "post-text-v5"
+POST_TEXT_EXPORT_LAYOUT_VERSION = "post-text-v7"
 DEFAULT_HLS_SEGMENT_TIME = int(config.HLS_OPTS.get("hls_time", 4))
 TWEMOJI_BASE_URL = "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72"
 
@@ -153,8 +153,61 @@ def hls_segment_cache_part(segment_time: Optional[int] = None) -> str:
     return f"segment_time={normalize_hls_segment_time(segment_time)}"
 
 
-def text_cache_part(text: str) -> str:
-    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+def normalize_overlay_payload(text: Any) -> Dict[str, Any]:
+    if isinstance(text, dict):
+        normalized_text = re.sub(r"\r\n?", "\n", str(text.get("text", "") or "")).strip()
+        custom_emojis: List[Dict[str, Any]] = []
+        for item in text.get("custom_emojis", []) or []:
+            path = str(item.get("path", "") or "").strip()
+            if not path:
+                continue
+            try:
+                sequence_index = int(item.get("sequence_index"))
+            except (TypeError, ValueError):
+                continue
+            custom_emojis.append({
+                "sequence_index": sequence_index,
+                "emoji_text": str(item.get("emoji_text", "") or ""),
+                "document_id": int(item.get("document_id", 0) or 0),
+                "mime_type": str(item.get("mime_type", "") or ""),
+                "path": path,
+                "animated": bool(item.get("animated")),
+            })
+        custom_emojis.sort(key=lambda row: row["sequence_index"])
+        return {
+            "text": normalized_text,
+            "custom_emojis": custom_emojis,
+        }
+    return {
+        "text": re.sub(r"\r\n?", "\n", str(text or "")).strip(),
+        "custom_emojis": [],
+    }
+
+
+def overlay_custom_emojis(text: Any) -> List[Dict[str, Any]]:
+    return normalize_overlay_payload(text)["custom_emojis"]
+
+
+def text_cache_part(text: Any) -> str:
+    payload = normalize_overlay_payload(text)
+    normalized = json.dumps(
+        {
+            "text": payload["text"],
+            "custom_emojis": [
+                {
+                    "sequence_index": item["sequence_index"],
+                    "emoji_text": item["emoji_text"],
+                    "document_id": item["document_id"],
+                    "mime_type": item["mime_type"],
+                    "animated": item["animated"],
+                }
+                for item in payload["custom_emojis"]
+            ],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return f"text={hashlib.md5(normalized.encode('utf-8')).hexdigest()}"
 
 
@@ -221,6 +274,33 @@ def probe_primary_video_codec(path: Path) -> str:
         return ""
 
     return (probe.stdout or "").strip().splitlines()[0].strip().lower() if probe.stdout else ""
+
+
+def probe_media_duration(path: Path) -> float:
+    try:
+        probe = subprocess.run(
+            [
+                ffprobe_binary(),
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception:
+        return 0.0
+
+    if probe.returncode != 0:
+        return 0.0
+
+    try:
+        return max(0.0, float((probe.stdout or "").strip() or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 # =========================
@@ -338,8 +418,8 @@ def audio_to_hls(
     run_cmd(cmd)
 
 
-def normalize_overlay_text(text: str) -> str:
-    return re.sub(r"\r\n?", "\n", str(text or "")).strip()
+def normalize_overlay_text(text: Any) -> str:
+    return normalize_overlay_payload(text)["text"]
 
 
 def wrap_overlay_text(text: str, line_width: int = 52) -> str:
@@ -536,6 +616,50 @@ def load_emoji_image(emoji_text: str, size: int) -> Optional[Image.Image]:
         return None
 
 
+def custom_emoji_preview_path(asset_path: Path) -> Path:
+    return emoji_cache_dir() / f"{hashlib.md5(str(asset_path).encode('utf-8')).hexdigest()}-preview.png"
+
+
+def ensure_custom_emoji_preview(asset_path: Path) -> Optional[Path]:
+    if not asset_path.exists():
+        return None
+
+    if asset_path.suffix.lower() in {".png", ".webp", ".jpg", ".jpeg"}:
+        return asset_path
+
+    preview = custom_emoji_preview_path(asset_path)
+    if preview.exists() and preview.stat().st_size > 0:
+        return preview
+
+    try:
+        run_cmd([
+            config.FFMPEG,
+            "-y",
+            "-i", str(asset_path),
+            "-frames:v", "1",
+            str(preview),
+        ], timeout=30)
+    except Exception:
+        return None
+
+    return preview if preview.exists() and preview.stat().st_size > 0 else None
+
+
+def load_custom_emoji_image(item: Dict[str, Any], size: int) -> Optional[Image.Image]:
+    preview_path = ensure_custom_emoji_preview(Path(item["path"]))
+    if not preview_path:
+        return None
+    try:
+        with Image.open(preview_path) as im:
+            return im.convert("RGBA").resize((size, size), Image.LANCZOS)
+    except Exception:
+        return None
+
+
+def animated_custom_emoji_entries(text: Any) -> List[Dict[str, Any]]:
+    return [item for item in overlay_custom_emojis(text) if item.get("animated") and item.get("path")]
+
+
 def overlay_layout(width: int, height: int, text: str) -> Dict[str, Any]:
     normalized = normalize_overlay_text(text)
     if not normalized:
@@ -613,7 +737,9 @@ def render_text_image(
     layout: Dict[str, Any],
     width: int,
     height: int,
-) -> None:
+    text: Any = "",
+    omit_animated_custom: bool = False,
+) -> List[Dict[str, Any]]:
     image = Image.new("RGB", (width, height), color="black")
     draw = ImageDraw.Draw(image)
     font = ImageFont.truetype(str(overlay_font_path()), layout["font_size"])
@@ -623,6 +749,10 @@ def render_text_image(
     total_text_height = len(lines) * line_step - layout["line_spacing"]
     start_y = max(0, (height - total_text_height) // 2)
     block_x = layout.get("side_padding", max(24, min(60, width // 20)))
+    payload = normalize_overlay_payload(text if text else layout["wrapped_text"])
+    custom_by_sequence = {item["sequence_index"]: item for item in payload["custom_emojis"]}
+    emoji_sequence_index = 0
+    overlays: List[Dict[str, Any]] = []
 
     for idx, line in enumerate(lines):
         if not line:
@@ -633,6 +763,37 @@ def render_text_image(
         for fragment in iter_text_and_emoji_fragments(line):
             value = fragment["value"]
             if fragment["kind"] == "emoji":
+                custom_item = custom_by_sequence.get(emoji_sequence_index)
+                emoji_sequence_index += 1
+                paste_y = baseline_y + max(0, (line_step - emoji_size) // 2)
+
+                if custom_item:
+                    if custom_item.get("animated"):
+                        overlays.append({
+                            "x": int(cursor_x),
+                            "y": int(paste_y),
+                            "size": int(emoji_size),
+                            "path": custom_item["path"],
+                            "mime_type": custom_item.get("mime_type", ""),
+                            "document_id": custom_item.get("document_id", 0),
+                        })
+                        if not omit_animated_custom:
+                            custom_image = load_custom_emoji_image(custom_item, emoji_size)
+                            if custom_image is not None:
+                                image.paste(custom_image, (int(cursor_x), int(paste_y)), custom_image)
+                            else:
+                                emoji_image = load_emoji_image(value, emoji_size)
+                                if emoji_image is not None:
+                                    image.paste(emoji_image, (int(cursor_x), int(paste_y)), emoji_image)
+                        cursor_x += emoji_size
+                        continue
+
+                    custom_image = load_custom_emoji_image(custom_item, emoji_size)
+                    if custom_image is not None:
+                        image.paste(custom_image, (int(cursor_x), int(paste_y)), custom_image)
+                        cursor_x += emoji_size
+                        continue
+
                 emoji_image = load_emoji_image(value, emoji_size)
                 if emoji_image is None:
                     bbox = draw.textbbox((0, 0), value, font=font)
@@ -640,7 +801,6 @@ def render_text_image(
                     cursor_x += bbox[2] - bbox[0]
                     continue
 
-                paste_y = baseline_y + max(0, (line_step - emoji_size) // 2)
                 image.paste(emoji_image, (int(cursor_x), int(paste_y)), emoji_image)
                 cursor_x += emoji_size
                 continue
@@ -651,26 +811,89 @@ def render_text_image(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path)
+    return overlays
 
 
-def render_text_panel_image(out_dir: Path, text: str, width: int, height: int) -> Tuple[Path, Dict[str, Any]]:
+def build_animated_text_panel_video(
+    base_image: Path,
+    overlays: List[Dict[str, Any]],
+    output_path: Path,
+    duration: float,
+) -> None:
+    cmd = [
+        config.FFMPEG, "-y",
+        "-loop", "1",
+        "-t", f"{max(0.5, duration):.3f}",
+        "-i", str(base_image),
+    ]
+
+    filter_parts = ["[0:v]format=rgba[base0]"]
+    current_label = "base0"
+    for idx, overlay in enumerate(overlays, start=1):
+        overlay_path = Path(overlay["path"])
+        overlay_mime = str(overlay.get("mime_type", "")).lower()
+        cmd.extend(["-stream_loop", "-1"])
+        if overlay_mime == "video/webm" or overlay_path.suffix.lower() == ".webm":
+            # Telegram custom emoji webm assets need libvpx-vp9 to preserve alpha.
+            cmd.extend(["-c:v", "libvpx-vp9"])
+        cmd.extend(["-i", str(overlay_path)])
+        in_label = f"emoji{idx}"
+        out_label = f"base{idx}"
+        filter_parts.append(
+            f"[{idx}:v]fps=25,scale={int(overlay['size'])}:{int(overlay['size'])}:flags=lanczos,format=rgba[{in_label}]"
+        )
+        filter_parts.append(
+            f"[{current_label}][{in_label}]overlay={int(overlay['x'])}:{int(overlay['y'])}:shortest=1[{out_label}]"
+        )
+        current_label = out_label
+
+    cmd.extend([
+        "-filter_complex", ";".join(filter_parts),
+        "-map", f"[{current_label}]",
+        "-an",
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "16",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        str(output_path),
+    ])
+    run_cmd(cmd)
+
+
+def render_text_panel_source(out_dir: Path, text: Any, width: int, height: int) -> Tuple[Path, Dict[str, Any], bool]:
     out_dir.mkdir(parents=True, exist_ok=True)
     layout = overlay_layout(width, height, text)
     text_file = out_dir / "post_text.txt"
     caption_png = out_dir / "caption.png"
+    caption_video = out_dir / "caption.mp4"
 
     with text_file.open("w", encoding="utf-8", newline="\n") as fh:
         fh.write(layout["wrapped_text"])
 
-    render_text_image(caption_png, layout, width, layout["caption_height"])
-    return caption_png, layout
+    overlays = render_text_image(
+        caption_png,
+        layout,
+        width,
+        layout["caption_height"],
+        text=text,
+        omit_animated_custom=True,
+    )
+    animated_overlays = [item for item in overlays if item.get("path")]
+    if not animated_overlays:
+        return caption_png, layout, False
+
+    durations = [probe_media_duration(Path(item["path"])) for item in animated_overlays]
+    panel_duration = max([1.0] + [value for value in durations if value > 0.0])
+    build_animated_text_panel_video(caption_png, animated_overlays, caption_video, panel_duration)
+    return caption_video, layout, True
 
 
 def video_to_hls_with_text(
     video: Path,
     out_dir: Path,
     stream_id: str,
-    text: str,
+    text: Any,
     width: int = 1280,
     height: int = 720,
     segment_time: Optional[int] = None,
@@ -678,14 +901,18 @@ def video_to_hls_with_text(
     m3u8 = out_dir / "index.m3u8"
     hls = hls_opts_with_segment_time(segment_time)
     out_dir.mkdir(parents=True, exist_ok=True)
-    caption_image, layout = render_text_panel_image(out_dir, text, width, height)
+    caption_source, layout, caption_animated = render_text_panel_source(out_dir, text, width, height)
     layout, filter_complex = media_with_text_filter_complex(width, height, text, 0, 1)
 
     cmd = [
         config.FFMPEG, "-y",
         "-i", str(video),
-        "-loop", "1",
-        "-i", str(caption_image),
+    ]
+    if caption_animated:
+        cmd.extend(["-stream_loop", "-1", "-i", str(caption_source)])
+    else:
+        cmd.extend(["-loop", "1", "-i", str(caption_source)])
+    cmd.extend([
         "-sn",
         "-dn",
         "-filter_complex", filter_complex,
@@ -706,7 +933,7 @@ def video_to_hls_with_text(
         "-hls_flags", hls.get("hls_flags", "independent_segments"),
         "-hls_base_url", f"/streams/{stream_id}/",
         str(m3u8)
-    ]
+    ])
     run_cmd(cmd)
 
 
@@ -714,7 +941,7 @@ def image_to_hls_with_text(
     image: Path,
     out_dir: Path,
     stream_id: str,
-    text: str,
+    text: Any,
     duration: int,
     width: int,
     height: int,
@@ -723,7 +950,7 @@ def image_to_hls_with_text(
     m3u8 = out_dir / "index.m3u8"
     hls = hls_opts_with_segment_time(segment_time)
     out_dir.mkdir(parents=True, exist_ok=True)
-    caption_image, layout = render_text_panel_image(out_dir, text, width, height)
+    caption_source, layout, caption_animated = render_text_panel_source(out_dir, text, width, height)
     layout, filter_complex = media_with_text_filter_complex(width, height, text, 0, 2)
 
     cmd = [
@@ -732,8 +959,12 @@ def image_to_hls_with_text(
         "-i", str(image),
         "-f", "lavfi",
         "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
-        "-loop", "1",
-        "-i", str(caption_image),
+    ]
+    if caption_animated:
+        cmd.extend(["-stream_loop", "-1", "-i", str(caption_source)])
+    else:
+        cmd.extend(["-loop", "1", "-i", str(caption_source)])
+    cmd.extend([
         "-t", str(duration),
         "-filter_complex", filter_complex,
         "-map", "[final]",
@@ -753,14 +984,14 @@ def image_to_hls_with_text(
         "-hls_flags", hls.get("hls_flags", "independent_segments"),
         "-hls_base_url", f"/streams/{stream_id}/",
         str(m3u8)
-    ]
+    ])
     run_cmd(cmd)
 
 
 def text_to_hls(
     out_dir: Path,
     stream_id: str,
-    text: str,
+    text: Any,
     duration: int = 300,
     width: int = 1280,
     height: int = 720,
@@ -774,12 +1005,20 @@ def text_to_hls(
     text_png = out_dir / "text_only.png"
     with text_file.open("w", encoding="utf-8", newline="\n") as fh:
         fh.write(layout["wrapped_text"])
-    render_text_image(text_png, layout, width, height)
+    overlays = render_text_image(text_png, layout, width, height, text=text, omit_animated_custom=True)
+    animated_overlays = [item for item in overlays if item.get("path")]
 
-    cmd = [
-        config.FFMPEG, "-y",
-        "-loop", "1",
-        "-i", str(text_png),
+    cmd = [config.FFMPEG, "-y"]
+    if animated_overlays:
+        text_video = out_dir / "text_only.mp4"
+        durations = [probe_media_duration(Path(item["path"])) for item in animated_overlays]
+        panel_duration = max([1.0] + [value for value in durations if value > 0.0])
+        build_animated_text_panel_video(text_png, animated_overlays, text_video, panel_duration)
+        cmd.extend(["-stream_loop", "-1", "-i", str(text_video)])
+    else:
+        cmd.extend(["-loop", "1", "-i", str(text_png)])
+
+    cmd.extend([
         "-f", "lavfi",
         "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
         "-t", str(duration),
@@ -798,7 +1037,7 @@ def text_to_hls(
         "-hls_flags", hls.get("hls_flags", "independent_segments"),
         "-hls_base_url", f"/streams/{stream_id}/",
         str(m3u8),
-    ]
+    ])
     run_cmd(cmd)
 
 

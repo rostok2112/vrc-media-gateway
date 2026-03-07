@@ -18,6 +18,7 @@ INPUT = BASE / "input"
 OUTPUT = BASE / "output"
 COOKIES = BASE / "cookies.txt"
 CLOUDFLARED_LOG = LOGS / "cloudflared.log"
+LOCAL_UPLOAD_MAX_BYTES = int(os.getenv("LOCAL_UPLOAD_MAX_BYTES", str(256 * 1024 * 1024 * 1024)))
 
 YTDLP = "yt-dlp.exe"
 JS_RUNTIME = "node"

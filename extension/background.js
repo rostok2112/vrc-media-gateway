@@ -413,16 +413,40 @@ async function startLocalPathBuild(rawPath) {
 
 async function startLocalUploadBuild(uploadId, fileName, contentType) {
   const upload = await getLocalMediaUpload(uploadId);
-  if (!upload || !upload.blob) {
+  if (!upload) {
     throw new Error("Selected local file is no longer available");
   }
 
   try {
+    let body = null;
+    let effectiveFileName = fileName || upload.filename || "upload.bin";
+    let effectiveContentType = contentType || upload.contentType || "";
+
+    if (upload.handle) {
+      if (typeof upload.handle.queryPermission === "function") {
+        const permission = await upload.handle.queryPermission({ mode: "read" });
+        if (permission !== "granted") {
+          throw new Error("Read access to the selected local file is no longer available");
+        }
+      }
+      if (typeof upload.handle.getFile !== "function") {
+        throw new Error("Selected local file handle is no longer valid");
+      }
+
+      const file = await upload.handle.getFile();
+      body = file;
+      effectiveFileName = effectiveFileName || file.name || "upload.bin";
+      effectiveContentType = effectiveContentType || file.type || "";
+    } else if (upload.blob) {
+      body = upload.blob;
+    } else {
+      throw new Error("Selected local file data is no longer available");
+    }
+
     const { processBase, finalBase } = await resolveLocalMediaBases();
     const params = new URLSearchParams({
-      filename: fileName || upload.filename || "upload.bin"
+      filename: effectiveFileName
     });
-    const effectiveContentType = contentType || upload.contentType || "";
     if (effectiveContentType) {
       params.set("content_type", effectiveContentType);
     }
@@ -435,7 +459,7 @@ async function startLocalUploadBuild(uploadId, fileName, contentType) {
         headers: {
           "Content-Type": effectiveContentType || "application/octet-stream"
         },
-        body: upload.blob
+        body
       }
     );
 

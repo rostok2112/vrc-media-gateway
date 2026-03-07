@@ -19,7 +19,7 @@ from api.segments_engine import registry
 router = APIRouter()
 
 LOCAL_MEDIA_BUILD_VERSION = "local-media-v1"
-LOCAL_UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024
+LOCAL_UPLOAD_MAX_BYTES = config.LOCAL_UPLOAD_MAX_BYTES
 LOCAL_UPLOAD_CACHE_DIR = config.OUTPUT / "local_uploads"
 LOCAL_UPLOAD_TMP_DIR = config.OUTPUT / "local_upload_tmp"
 

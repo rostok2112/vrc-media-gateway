@@ -7,6 +7,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const LOCAL_MEDIA_UPLOAD_DB_NAME = "vrchat-local-media";
   const LOCAL_MEDIA_UPLOAD_STORE = "uploads";
   const LOCAL_MEDIA_UPLOAD_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+  const LOCAL_MEDIA_BLOB_STAGE_MAX_BYTES = 512 * 1024 * 1024;
 
   let selectedLocalUploadId = "";
   let selectedLocalFileName = "";
@@ -46,13 +47,27 @@ document.addEventListener("DOMContentLoaded", () => {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  function selectedLocalFileLabel(name) {
-    return `${LOCAL_FILE_INPUT_PREFIX}${name}`;
+  function formatBytes(size) {
+    const value = Number(size);
+    if (!Number.isFinite(value) || value < 0) return "";
+
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let unitIndex = 0;
+    let scaled = value;
+    while (scaled >= 1024 && unitIndex < units.length - 1) {
+      scaled /= 1024;
+      unitIndex += 1;
+    }
+    const digits = scaled >= 100 || unitIndex === 0 ? 0 : scaled >= 10 ? 1 : 2;
+    return `${scaled.toFixed(digits)} ${units[unitIndex]}`;
   }
 
-  function isSupportedLocalFile(file) {
-    if (!file) return false;
-    const mime = String(file.type || "").toLowerCase();
+  function selectedLocalFileLabel(name, sizeText = "") {
+    return `${LOCAL_FILE_INPUT_PREFIX}${name}${sizeText ? ` (${sizeText})` : ""}`;
+  }
+
+  function isSupportedLocalFileMeta(name, type) {
+    const mime = String(type || "").toLowerCase();
     if (
       mime.startsWith("image/") ||
       mime.startsWith("video/") ||
@@ -62,8 +77,31 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     return /\.(jpe?g|png|webp|bmp|gif|tiff?|mp4|m4v|mov|mkv|avi|webm|ts|mts|m2ts|flv|mp3|m4a|aac|flac|ogg|oga|opus|wav|wma)$/i.test(
-      file.name || ""
+      name || ""
     );
+  }
+
+  function isSupportedLocalFile(file) {
+    if (!file) return false;
+    return isSupportedLocalFileMeta(file.name, file.type);
+  }
+
+  async function ensureReadableFileHandle(handle) {
+    if (!handle || handle.kind !== "file") {
+      throw new Error("Only local files are supported");
+    }
+
+    if (typeof handle.queryPermission === "function") {
+      let permission = await handle.queryPermission({ mode: "read" });
+      if (permission !== "granted" && typeof handle.requestPermission === "function") {
+        permission = await handle.requestPermission({ mode: "read" });
+      }
+      if (permission !== "granted") {
+        throw new Error("Read access to the selected local file was not granted");
+      }
+    }
+
+    return handle;
   }
 
   function updateDropZone(text) {
@@ -214,34 +252,89 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  async function setSelectedLocalFile(file) {
-    if (!isSupportedLocalFile(file)) {
-      throw new Error("Only local image, video, and audio files are supported");
-    }
-
+  async function stageSelectedLocalUpload(uploadId, value, fileName, contentType, fileSize, statusLabel) {
     if (selectedLocalUploadId) {
       await clearSelectedLocalFile(false, true);
     }
 
-    const uploadId = crypto.randomUUID();
-    await putLocalMediaUpload(uploadId, {
-      blob: file,
-      filename: file.name,
-      contentType: file.type || "",
-      createdAt: Date.now()
-    });
+    await putLocalMediaUpload(uploadId, value);
+
+    const sizeText = formatBytes(fileSize);
 
     selectedLocalUploadId = uploadId;
-    selectedLocalFileName = file.name;
-    selectedLocalFileContentType = file.type || "";
-    selectedLocalFileMarker = selectedLocalFileLabel(file.name);
+    selectedLocalFileName = fileName;
+    selectedLocalFileContentType = contentType || "";
+    selectedLocalFileMarker = selectedLocalFileLabel(fileName, sizeText);
 
     input.value = selectedLocalFileMarker;
     output.value = "";
-    status.textContent = `${file.name} selected`;
+    status.textContent = statusLabel || `${fileName} selected`;
     clearError();
-    updateDropZone(`Selected: ${file.name}`);
+    updateDropZone(`Selected: ${fileName}${sizeText ? ` (${sizeText})` : ""}`);
     await savePopupState();
+  }
+
+  async function setSelectedLocalFileHandle(handle) {
+    const readableHandle = await ensureReadableFileHandle(handle);
+    const file = await readableHandle.getFile();
+    if (!isSupportedLocalFile(file)) {
+      throw new Error("Only local image, video, and audio files are supported");
+    }
+
+    const uploadId = crypto.randomUUID();
+    const value = {
+      handle: readableHandle,
+      filename: file.name,
+      contentType: file.type || "",
+      size: file.size,
+      createdAt: Date.now(),
+      sourceType: "handle"
+    };
+
+    try {
+      await stageSelectedLocalUpload(
+        uploadId,
+        value,
+        file.name,
+        file.type || "",
+        file.size,
+        `${file.name} selected from filesystem`
+      );
+      return;
+    } catch (e) {
+      if (file.size > LOCAL_MEDIA_BLOB_STAGE_MAX_BYTES) {
+        throw new Error("Large local files require File System Access support or a pasted local path");
+      }
+      console.log("[popup] handle staging fallback:", e && e.message);
+    }
+
+    await setSelectedLocalFile(file);
+  }
+
+  async function setSelectedLocalFile(file) {
+    if (!isSupportedLocalFile(file)) {
+      throw new Error("Only local image, video, and audio files are supported");
+    }
+    if (file.size > LOCAL_MEDIA_BLOB_STAGE_MAX_BYTES) {
+      throw new Error("Large local files must be selected through File System Access or pasted as a local path");
+    }
+
+    const uploadId = crypto.randomUUID();
+    await stageSelectedLocalUpload(
+      uploadId,
+      {
+        blob: file,
+        filename: file.name,
+        contentType: file.type || "",
+        size: file.size,
+        createdAt: Date.now(),
+        sourceType: "blob"
+      },
+      file.name,
+      file.type || "",
+      file.size,
+      `${file.name} selected`
+    );
   }
 
   function applyJobLabel(job) {
@@ -477,7 +570,36 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  pickFileBtn.addEventListener("click", () => localFilePicker.click());
+  pickFileBtn.addEventListener("click", async () => {
+    if (typeof window.showOpenFilePicker === "function") {
+      try {
+        const handles = await window.showOpenFilePicker({
+          multiple: false,
+          excludeAcceptAllOption: false,
+          types: [{
+            description: "Local media",
+            accept: {
+              "image/*": [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff"],
+              "video/*": [".mp4", ".m4v", ".mov", ".mkv", ".avi", ".webm", ".ts", ".mts", ".m2ts", ".flv"],
+              "audio/*": [".mp3", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav", ".wma"]
+            }
+          }]
+        });
+        const handle = handles && handles[0];
+        if (!handle) return;
+        await setSelectedLocalFileHandle(handle);
+        return;
+      } catch (e) {
+        if (e && e.name === "AbortError") {
+          return;
+        }
+        status.textContent = "Error: " + e.message;
+        return;
+      }
+    }
+
+    localFilePicker.click();
+  });
 
   localFilePicker.addEventListener("change", async () => {
     try {
@@ -512,10 +634,18 @@ document.addEventListener("DOMContentLoaded", () => {
     event.stopPropagation();
     dropZone.classList.remove("active");
 
-    const file = event.dataTransfer?.files?.[0];
-    if (!file) return;
-
     try {
+      const item = Array.from(event.dataTransfer?.items || []).find(entry => entry && entry.kind === "file");
+      if (item && typeof item.getAsFileSystemHandle === "function") {
+        const handle = await item.getAsFileSystemHandle();
+        if (handle && handle.kind === "file") {
+          await setSelectedLocalFileHandle(handle);
+          return;
+        }
+      }
+
+      const file = event.dataTransfer?.files?.[0];
+      if (!file) return;
       await setSelectedLocalFile(file);
     } catch (e) {
       status.textContent = "Error: " + e.message;

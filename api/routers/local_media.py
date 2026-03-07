@@ -151,6 +151,8 @@ def _detect_media_kind(path: Path, content_type: Optional[str] = None) -> str:
     for mime in candidates:
         if not mime:
             continue
+        if mime == "image/gif":
+            return "video"
         if mime.startswith("image/"):
             return "image"
         if mime.startswith("audio/"):
@@ -159,6 +161,8 @@ def _detect_media_kind(path: Path, content_type: Optional[str] = None) -> str:
             return "video"
 
     suffix = path.suffix.lower()
+    if suffix == ".gif":
+        return "video"
     if suffix in IMAGE_SUFFIXES:
         return "image"
     if suffix in AUDIO_SUFFIXES:

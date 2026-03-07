@@ -60,6 +60,13 @@ Telegram audio behavior:
 - `/api/stream-tg-audio` is the direct Telegram audio endpoint
 - `/api/stream-tg-media` auto-detects Telegram audio posts and routes them to the same audio pipeline
 - mono Telegram voice messages are preserved correctly when converted to stereo AAC HLS output
+- Telegram music tracks build poster-style audio HLS with cover/title/performer when Telegram exposes that metadata
+
+Audio poster behavior:
+
+- `/api/stream-sc` now builds poster-style audio HLS with SoundCloud artwork, title, performer, and duration when `yt-dlp` exposes those fields
+- `/api/stream-audio` builds poster-style audio HLS and uses embedded tags/cover art when the remote audio source exposes them
+- local audio builds through `/local-api/stream-local-path-build-start` and `/local-api/stream-local-upload-build-start` also use embedded tags/cover art when available
 
 Telegram post-text behavior:
 
@@ -113,16 +120,19 @@ Spotify features depend on the in-memory websocket registry in this backend. Use
 
 - `segment_time=<seconds>`
 - `prefetch=<count>`
+- `show_info=<0|1>`
 
 Example:
 
 ```text
-/api/stream-spotify?url=https://open.spotify.com/track/...&segment_time=2&prefetch=10
+/api/stream-spotify?url=https://open.spotify.com/track/...&segment_time=2&prefetch=10&show_info=1
 ```
 
 If those params are missing, the backend uses the defaults from `SPOTIFY_HLS_OPTS` in [`config.py`](./config.py).
 
 The Spicetify bridge stores those values in its `Streaming settings` section and sends them through the `VRChat` button and the Spotify cache-clear flow so different Spotify streaming presets do not share the same cache folder.
+
+When `show_info=1`, the backend asks the Spicetify bridge for current track metadata, renders a poster frame with cover/title/artist, and muxes that poster video together with the live Spotify audio capture. When `show_info=0`, Spotify stays on the older audio-only live HLS path.
 
 ## Local Media Note
 

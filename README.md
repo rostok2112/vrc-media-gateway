@@ -20,7 +20,7 @@ VRChat Media Gateway is a Windows-first toolkit for turning web, Telegram, Spoti
   - `VRChat` button
   - `Clear cache` button
   - `Settings` button
-  - `Streaming settings` section for Spotify HLS prefetch tuning
+  - `Streaming settings` section for Spotify HLS prefetch tuning and optional cover/title/artist poster output
   - `Restore audio output` action
 - FastAPI backend in [`api/`](./api)
 - Websocket RPC endpoint for Spotify control at `/api/ws/spotify`
@@ -33,17 +33,17 @@ VRChat Media Gateway is a Windows-first toolkit for turning web, Telegram, Spoti
 | Source | How it works now |
 | --- | --- |
 | YouTube | Browser button or direct API call downloads via `yt-dlp`, uses Node-based JS challenge solving, then converts to HLS |
-| SoundCloud | Browser button appears only on track pages, preserves secret/private links when possible, downloads with `yt-dlp`, then converts to HLS |
+| SoundCloud | Browser button appears only on track pages, preserves secret/private links when possible, downloads with `yt-dlp`, then converts to poster-style HLS with artwork, title, performer, and duration when SoundCloud metadata exposes them |
 | Telegram images and static stickers | Telegram endpoints classify the Telegram post first, then use Telethon for real Telegram photos and static `.webp` stickers, with HTML image parsing only as a photo fallback |
 | Telegram videos, animated GIFs, and motion stickers | Telegram Web context menu and direct API calls can auto-detect videos, animated GIF posts, video stickers, and animated `.tgs` stickers, download them through Telethon, then convert them to HLS |
-| Telegram music tracks and voice messages | Telegram Web context menu and direct API calls can auto-detect Telegram audio documents and voice notes, download them through Telethon, then convert them to audio HLS |
+| Telegram music tracks and voice messages | Telegram Web context menu and direct API calls can auto-detect Telegram audio documents and voice notes, download them through Telethon, then convert them to poster-style audio HLS with cover/title/performer when Telegram exposes that metadata |
 | Telegram post text | Telegram Web can export `VRChat with post text`, which renders the post text on a black panel below the media; pasted text-only `t.me/...` quick links also build a text-only HLS stream automatically |
 | Generic images | Right-click any still image on most sites and export it to a static HLS video |
-| Generic audio | Right-click a site audio element with a direct media URL and export it to HLS |
+| Generic audio | Right-click a site audio element with a direct media URL and export it to poster-style HLS; embedded tags and cover art are used when the source file exposes them |
 | Generic videos | Right-click a site video with a direct media URL and export it to HLS |
 | Spotify Web | Injected buttons in `open.spotify.com` generate `/api/stream-spotify` links and allow cache clearing |
-| Spotify Desktop | Spicetify bridge talks to the backend over websocket, routes Spotify audio into a virtual cable, and writes live HLS segments |
-| Local media in popup | The browser extension popup can build HLS links from selected or dropped local image/video/audio files, or from pasted absolute local paths when the API can see that file on the same machine; large files prefer direct filesystem handles when Chromium exposes them |
+| Spotify Desktop | Spicetify bridge talks to the backend over websocket, routes Spotify audio into a virtual cable, and writes live HLS segments; optional poster mode shows the current track cover, title, artist, and duration |
+| Local media in popup | The browser extension popup can build HLS links from selected or dropped local image/video/audio files, or from pasted absolute local paths when the API can see that file on the same machine; local audio exports also use embedded tags and cover art when available, and large files prefer direct filesystem handles when Chromium exposes them |
 | Legacy local files | Manual flow through [`run convertion.bat`](./run%20convertion.bat) using files from `input/` |
 
 ## Platform Notes
@@ -227,11 +227,12 @@ Spicetify settings now also include a `Streaming settings` button. That section 
 - prefetch segments count
 - prefetch segment duration in seconds
 - a read-only total prefetch duration field
+- `Show track cover/title/artist` checkbox for poster-style Spotify output
 
 The `VRChat` button appends those values to Spotify links as:
 
 ```text
-/api/stream-spotify?url=<spotify-track-url>&segment_time=<seconds>&prefetch=<count>
+/api/stream-spotify?url=<spotify-track-url>&segment_time=<seconds>&prefetch=<count>&show_info=<0|1>
 ```
 
 If either query parameter is omitted, the backend falls back to the defaults from [`api/config.py`](./api/config.py) `SPOTIFY_HLS_OPTS`.
@@ -269,11 +270,11 @@ Notes:
 Site-specific behavior on the current branch:
 
 - YouTube: injects a `VRChat` button only on watch pages and survives SPA navigation
-- SoundCloud: injects only on real track pages, not artist/profile tabs
+- SoundCloud: injects only on real track pages, not artist/profile tabs; exported tracks now build poster-style audio HLS with artwork/title/performer when available
 - Telegram Web: adds `VRChat` and `VRChat with post text` entries to the message context menu, auto-detects images/stickers/videos/animated GIF posts/music tracks/voice messages, and hides the plain `VRChat` action on text-only posts
 - Spotify Web: adds `VRChat` and `Clear cache` buttons near the player controls
 - Generic images: adds a `VRChat` item to the browser image context menu; animated GIF URLs are routed through the video exporter
-- Generic audio: adds a `VRChat` item to the browser audio context menu for direct audio URLs
+- Generic audio: adds a `VRChat` item to the browser audio context menu for direct audio URLs and renders poster-style audio HLS when tags/cover art are available
 - Generic videos: adds a `VRChat` item to the browser video context menu for direct video URLs
 - Popup quick-link: can build ready links from remote URLs, selected/dropped local media, and pasted absolute local paths
 
@@ -299,8 +300,8 @@ Main HTTP endpoints:
 - `GET /api/stream-tg-video?url=<telegram-post-url>`
 - `GET /api/stream-tg-audio?url=<telegram-post-url>`
 - `GET /api/tg-post-info?url=<telegram-post-url>`
-- `GET /api/stream-spotify?url=<spotify-track-url>&segment_time=<seconds>&prefetch=<count>`
-- `POST /api/stream-spotify-clear?url=<spotify-track-url>&segment_time=<seconds>&prefetch=<count>`
+- `GET /api/stream-spotify?url=<spotify-track-url>&segment_time=<seconds>&prefetch=<count>&show_info=<0|1>`
+- `POST /api/stream-spotify-clear?url=<spotify-track-url>&segment_time=<seconds>&prefetch=<count>&show_info=<0|1>`
 - `GET /api/tunnel`
 
 Local-only endpoints:
@@ -322,8 +323,9 @@ Behavior notes:
 - Non-Spotify VOD endpoints can also accept `segment_time=<seconds>` and use that value in both HLS generation and cache keys
 - Telegram media endpoints also accept `with_text=1` to render the Telegram post text on a black panel under the media; text-only Telegram posts can build a text-only HLS output through the same flow
 - Telegram sticker posts are supported too: static `.webp` stickers go through the image path, while `video/webm` and animated `.tgs` stickers go through the motion/video path
-- Telegram music tracks and voice messages are supported too: they go through the Telegram audio path and build audio-only HLS output
-- Spotify is segment-driven and uses the websocket bridge for metadata, seeking, playback start, cache clearing, and audio restoration
+- Telegram music tracks and voice messages are supported too: they go through the Telegram audio path and build poster-style audio HLS output with cover/title/performer when Telegram exposes that metadata
+- SoundCloud, generic audio, and local audio exports also build poster-style audio HLS output with cover/title/performer when the source metadata exposes them
+- Spotify is segment-driven and uses the websocket bridge for metadata, seeking, playback start, cache clearing, and audio restoration; `show_info=1` enables poster-style cover/title/artist output on the live Spotify stream
 - Managed popup flows usually resolve to the final `/streams/<sid>/index.m3u8` link after the build is ready
 - Local media ingestion uses `/local-api/*` only on loopback; the final playback URL is still served from `/streams/...`
 - Animated GIFs are treated as motion media and end up on the video/HLS path instead of the still-image path

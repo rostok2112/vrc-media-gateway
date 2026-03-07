@@ -161,6 +161,7 @@ The popup supports:
 - public tunnel URL auto-detection or manual override
 - local file choose/drop for image, video, and audio
 - pasted absolute local filesystem paths such as `C:\media\clip.mp4` or `file:///C:/media/clip.mp4`
+- `Clear all cache` button for wiping generated streams and temporary output from the local machine
 
 `Use local API for processing` means:
 
@@ -287,6 +288,7 @@ Local-only endpoints:
 - `POST /local-api/stream-local-path-build-start`
 - `POST /local-api/stream-local-upload-build-start`
 - `GET /local-api/stream-local-build-status?job_id=<job-id>`
+- `POST /local-api/clear-cache-all`
 
 Spotify-specific delivery endpoints:
 
@@ -368,6 +370,7 @@ This path is now the legacy/manual mode. The browser and API-driven flows are th
 ### Cache cleanup
 
 - Use the Spotify `Clear cache` button for per-track resets
+- Use the popup `Clear all cache` button for a loopback-only wipe of generated streams and temporary output
 - Use [`clear_cache.bat`](./clear_cache.bat) to wipe generated media under `output/` and `html/streams/`
 
 ## Project Layout

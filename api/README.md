@@ -37,6 +37,7 @@ For full-stack usage, start the project from the repository root with:
 - `/local-api/stream-local-path-build-start`
 - `/local-api/stream-local-upload-build-start`
 - `/local-api/stream-local-build-status`
+- `/local-api/clear-cache-all`
 
 ## Telegram Config
 
@@ -81,6 +82,7 @@ Local media ingestion is split out from the public API on purpose.
 - `/local-api/stream-local-path-build-start` accepts an absolute local filesystem path and only works when FastAPI is running on the same machine that can read that file
 - `/local-api/stream-local-upload-build-start` accepts raw uploaded file bytes for image, video, and audio media
 - `/local-api/stream-local-build-status` polls local build jobs
+- `/local-api/clear-cache-all` stops active stream writers, resets build job state, and wipes generated cache directories on the local machine
 
 Security rules for that path:
 

@@ -32,6 +32,7 @@ For full-stack usage, start the project from the repository root with:
 - `/api/stream-tg-media`
 - `/api/stream-tg-image`
 - `/api/stream-tg-video`
+- `/api/tg-post-info`
 - `/api/stream-spotify`
 - `/api/stream-spotify-clear`
 - `/api/tunnel`
@@ -45,6 +46,13 @@ Animated GIF behavior:
 
 - generic `.gif` sources are treated as motion/video instead of the still-image path
 - Telegram animated GIF posts are classified as video-like media and converted through the Telegram video pipeline
+
+Telegram post-text behavior:
+
+- `/api/stream-tg-media`, `/api/stream-tg-image`, and `/api/stream-tg-video` accept optional `with_text=1`
+- when `with_text=1`, Telegram post text is rendered on a black panel below the media instead of over the media
+- text-only Telegram posts can also build a text-only HLS output through `/api/stream-tg-media`
+- `/api/tg-post-info` is a lightweight metadata probe used by the browser extension to detect whether a Telegram post is text-only before starting a managed build
 
 Non-Spotify HLS tuning:
 

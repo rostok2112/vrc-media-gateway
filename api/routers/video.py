@@ -105,7 +105,7 @@ def _build_video_sync(url: str, referer: str, out_dir, sid: str) -> None:
         "-map", "0:a:0?",
         "-sn",
         "-dn",
-        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1",
+        "-vf", "scale=ceil(iw/2)*2:ceil(ih/2)*2,setsar=1",
         "-c:v", "libx264",
         "-preset", "fast",
         "-profile:v", "high",

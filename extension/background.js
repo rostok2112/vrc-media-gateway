@@ -79,6 +79,11 @@ function isProbablyDirectVideoUrl(value) {
   return /\.(mp4|m4v|mov|mkv|avi|webm|ts|mts|m2ts|flv|m3u8)(?:[?#].*)?$/i.test(src);
 }
 
+function isProbablyGifUrl(value) {
+  const src = String(value || "").trim();
+  return /\.gif(?:[?#].*)?$/i.test(src) || /^data:image\/gif/i.test(src);
+}
+
 function isProbablyDirectAudioUrl(value) {
   const src = String(value || "").trim();
   return /\.(mp3|m4a|aac|flac|ogg|oga|opus|wav|wma)(?:[?#].*)?$/i.test(src);
@@ -545,6 +550,13 @@ function buildManagedEndpointForSource(src) {
     return {
       endpoint: "/api/stream-yt?url=" + encodeURIComponent(src),
       sourceKind: "youtube",
+      sourceLabel: src
+    };
+  }
+  if (isProbablyGifUrl(src)) {
+    return {
+      endpoint: "/api/stream-video?url=" + encodeURIComponent(src),
+      sourceKind: "video",
       sourceLabel: src
     };
   }
@@ -1174,6 +1186,7 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === VR_IMAGE_MENU_ID) {
     const imageUrl = info.srcUrl;
+    const referer = info.frameUrl || info.pageUrl || "";
 
     console.log("[bg] image menu clicked", imageUrl);
 
@@ -1185,9 +1198,19 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
       return;
     }
 
+    if (isProbablyGifUrl(imageUrl)) {
+      chrome.tabs.sendMessage(tab.id, {
+        action: "vr_resolve_video",
+        url: imageUrl,
+        referer
+      });
+      return;
+    }
+
     chrome.tabs.sendMessage(tab.id, {
       action: "vr_resolve_image",
-      url: imageUrl
+      url: imageUrl,
+      referer
     });
     return;
   }

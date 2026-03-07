@@ -58,7 +58,7 @@
       } catch {
         document.execCommand("copy");
       }
-      copyBtn.textContent = "Copied OK";
+      copyBtn.textContent = "Copied";
     }
 
     copy();
@@ -92,6 +92,11 @@
         popupResult(resp.url);
       }
     );
+  }
+
+  function isProbablyGifUrl(value) {
+    const src = String(value || "").trim();
+    return /\.gif(?:[?#].*)?$/i.test(src) || /^data:image\/gif/i.test(src);
   }
 
   const style = document.createElement("style");
@@ -179,7 +184,13 @@
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.action === "vr_resolve_image") {
       const imageUrl = msg.url;
-      const endpoint = "/api/stream-image?url=" + encodeURIComponent(imageUrl);
+      let endpoint = "/api/stream-image?url=" + encodeURIComponent(imageUrl);
+      if (isProbablyGifUrl(imageUrl)) {
+        endpoint = "/api/stream-video?url=" + encodeURIComponent(imageUrl);
+        if (msg.referer) {
+          endpoint += "&referer=" + encodeURIComponent(msg.referer);
+        }
+      }
       resolveEndpoint(endpoint);
     }
 

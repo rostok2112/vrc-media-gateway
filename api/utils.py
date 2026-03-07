@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 IMAGE_EXPORT_LAYOUT_VERSION = "fit-pad-v1"
 VIDEO_HLS_LAYOUT_VERSION = "video-h264-v2"
+GIF_EXPORT_LAYOUT_VERSION = "gif-motion-v1"
 
 
 # =========================
@@ -101,6 +102,32 @@ def download_file(url: str, dest: Path, max_bytes: int = 8 * 1024 * 1024):
                     raise HTTPException(400, "file too large")
                 f.write(chunk)
     return dest
+
+
+def is_probably_gif_source(source: Union[str, Path]) -> bool:
+    if isinstance(source, Path):
+        return source.suffix.lower() == ".gif"
+
+    value = str(source or "").strip()
+    if not value:
+        return False
+
+    if value.lower().startswith("data:image/gif"):
+        return True
+
+    parsed = urlparse(value)
+    candidate = parsed.path if parsed.scheme else value
+    return Path(candidate).suffix.lower() == ".gif"
+
+
+def is_gif_file(path: Path) -> bool:
+    try:
+        with path.open("rb") as fh:
+            header = fh.read(6)
+    except Exception:
+        return False
+
+    return header in {b"GIF87a", b"GIF89a"}
 
 
 # =========================
@@ -225,7 +252,7 @@ def video_to_hls(video: Path, out_dir: Path, stream_id: str):
             "-map", "0:a:0?",
             "-sn",
             "-dn",
-            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1",
+            "-vf", "scale=ceil(iw/2)*2:ceil(ih/2)*2,setsar=1",
             "-c:v", "libx264",
             "-preset", "fast",
             "-profile:v", "high",
@@ -287,22 +314,26 @@ def build_hls_from_image(
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    img = out_dir / "src.jpg"
+    src_suffix = ".gif" if is_probably_gif_source(image_url) else ".jpg"
+    download_limit = 256 * 1024 * 1024 if src_suffix == ".gif" else 8 * 1024 * 1024
+    img = out_dir / f"src{src_suffix}"
     mp4 = out_dir / "video.mp4"
 
-    # FIX: support local files from Telethon
     if Path(image_url).exists():
         copyfile(image_url, img)
     else:
-        download_file(image_url, img)
+        download_file(image_url, img, max_bytes=download_limit)
 
-    image_to_mp4(img, mp4, duration, width, height)
-    video_to_hls(mp4, out_dir, stream_id)
+    if is_gif_file(img):
+        video_to_hls(img, out_dir, stream_id)
+    else:
+        image_to_mp4(img, mp4, duration, width, height)
+        video_to_hls(mp4, out_dir, stream_id)
 
-    try:
-        mp4.unlink()
-    except Exception:
-        pass
+        try:
+            mp4.unlink()
+        except Exception:
+            pass
 
     if not wait_hls_ready(out_dir):
         raise HTTPException(500, "HLS build timeout")
@@ -359,10 +390,14 @@ def sid_for_url(url: str, *extra_parts) -> str:
 
 
 def image_stream_sid(url: str, duration: int, width: int, height: int) -> str:
+    if is_probably_gif_source(url):
+        return sid_for_url(url, GIF_EXPORT_LAYOUT_VERSION)
     return sid_for_url(url, IMAGE_EXPORT_LAYOUT_VERSION, f"{duration}{width}x{height}")
 
 
 def image_build_job_id(url: str, duration: int, width: int, height: int, scope: str = "img-build") -> str:
+    if is_probably_gif_source(url):
+        return sid_for_url(url, scope, GIF_EXPORT_LAYOUT_VERSION)
     return sid_for_url(url, scope, IMAGE_EXPORT_LAYOUT_VERSION, f"{duration}{width}x{height}")
 
 

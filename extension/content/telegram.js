@@ -369,6 +369,10 @@
       return;
     }
 
+    if (!resolveMessageUrl()) {
+      return;
+    }
+
     menu.dataset.vrchatInsertPending = "1";
 
     let hasMedia = messageHasStreamableMedia(lastContextMessage);

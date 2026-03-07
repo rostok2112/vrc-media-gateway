@@ -9,12 +9,14 @@ import tempfile
 import time
 import re
 import subprocess
+import textwrap
 from pathlib import Path
 from typing import Any, Dict, Optional, List, Tuple, Union
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import psutil
 import requests
 from fastapi import HTTPException
+from PIL import Image, ImageDraw, ImageFont
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.custom.message import Message
@@ -31,6 +33,7 @@ logger = logging.getLogger(__name__)
 IMAGE_EXPORT_LAYOUT_VERSION = "fit-pad-v1"
 VIDEO_HLS_LAYOUT_VERSION = "video-h264-v2"
 GIF_EXPORT_LAYOUT_VERSION = "gif-motion-v1"
+POST_TEXT_EXPORT_LAYOUT_VERSION = "post-text-v4"
 DEFAULT_HLS_SEGMENT_TIME = int(config.HLS_OPTS.get("hls_time", 4))
 
 
@@ -147,6 +150,16 @@ def hls_opts_with_segment_time(segment_time: Optional[int] = None) -> Dict[str, 
 
 def hls_segment_cache_part(segment_time: Optional[int] = None) -> str:
     return f"segment_time={normalize_hls_segment_time(segment_time)}"
+
+
+def text_cache_part(text: str) -> str:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    return f"text={hashlib.md5(normalized.encode('utf-8')).hexdigest()}"
+
+
+def even_int(value: int) -> int:
+    value = int(value)
+    return value if value % 2 == 0 else value + 1
 
 
 # =========================
@@ -324,6 +337,305 @@ def audio_to_hls(
     run_cmd(cmd)
 
 
+def normalize_overlay_text(text: str) -> str:
+    return re.sub(r"\r\n?", "\n", str(text or "")).strip()
+
+
+def wrap_overlay_text(text: str, line_width: int = 52) -> str:
+    normalized = normalize_overlay_text(text)
+    if not normalized:
+        return ""
+
+    wrapper = textwrap.TextWrapper(
+        width=max(12, line_width),
+        break_long_words=True,
+        break_on_hyphens=False,
+        replace_whitespace=True,
+        drop_whitespace=True,
+    )
+
+    lines: List[str] = []
+    for paragraph in normalized.split("\n"):
+        compact = re.sub(r"\s+", " ", paragraph).strip()
+        if not compact:
+            if lines and lines[-1] != "":
+                lines.append("")
+            continue
+        lines.extend(wrapper.wrap(compact) or [""])
+
+    if not lines:
+        return ""
+
+    while lines and lines[-1] == "":
+        lines.pop()
+
+    return "\n".join(lines)
+
+
+def overlay_font_path() -> Path:
+    windir = Path(os.environ.get("WINDIR", r"C:\Windows"))
+    candidates = [
+        windir / "Fonts" / "arial.ttf",
+        windir / "Fonts" / "segoeui.ttf",
+        windir / "Fonts" / "tahoma.ttf",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise RuntimeError("No suitable Windows font file found for post-text overlay")
+
+
+def ffmpeg_filter_path(path: Path) -> str:
+    return path.resolve().as_posix().replace(":", r"\:").replace("'", r"\'")
+
+
+def overlay_layout(width: int, height: int, text: str) -> Dict[str, Any]:
+    normalized = normalize_overlay_text(text)
+    if not normalized:
+        raise HTTPException(400, "post text is empty")
+
+    max_font_size = max(24, min(36, width // 34))
+    min_font_size = 14
+    min_media_height = max(120, height // 6)
+    side_padding = max(24, min(60, width // 20))
+
+    def build_layout(font_size: int) -> Dict[str, Any]:
+        line_spacing = max(4, font_size // 4)
+        line_width = max(18, int((width - (side_padding * 2)) / max(font_size * 0.58, 1)))
+        wrapped = wrap_overlay_text(normalized, line_width=line_width)
+        if not wrapped:
+            raise HTTPException(400, "post text is empty")
+        line_count = len(wrapped.split("\n"))
+        caption_height = even_int(max(110, line_count * (font_size + line_spacing) + 40))
+        media_height = height - caption_height
+        return {
+            "wrapped_text": wrapped,
+            "font_size": font_size,
+            "line_spacing": line_spacing,
+            "media_height": media_height,
+            "caption_height": caption_height,
+            "side_padding": side_padding,
+        }
+
+    best_layout: Optional[Dict[str, Any]] = None
+    for font_size in range(max_font_size, min_font_size - 1, -1):
+        candidate = build_layout(font_size)
+        best_layout = candidate
+        if candidate["media_height"] >= min_media_height:
+            return candidate
+
+    if best_layout is None:
+        raise HTTPException(400, "post text is empty")
+
+    best_layout["media_height"] = even_int(max(80, best_layout["media_height"]))
+    best_layout["caption_height"] = height - best_layout["media_height"]
+    return best_layout
+
+
+def media_with_text_filter_complex(
+    width: int,
+    height: int,
+    text: str,
+    media_input_index: int,
+    caption_input_index: int,
+) -> Tuple[Dict[str, Any], str]:
+    layout = overlay_layout(width, height, text)
+    filter_complex = (
+        f"color=c=black:s={width}x{layout['media_height']}[media_bg];"
+        f"[{media_input_index}:v]"
+        f"scale={width}:{layout['media_height']}:force_original_aspect_ratio=decrease:flags=lanczos,"
+        "setsar=1[scaled];"
+        "[media_bg][scaled]overlay=(W-w)/2:0[media];"
+        f"[{caption_input_index}:v]format=rgba[caption];"
+        "[media][caption]vstack=inputs=2[stacked];"
+        f"[stacked]pad={width}:{height}:0:0:color=black[final]"
+    )
+    return layout, filter_complex
+
+
+def write_overlay_text_file(out_dir: Path, text: str) -> Path:
+    layout = overlay_layout(1280, 720, text)
+    text_file = out_dir / "post_text.txt"
+    with text_file.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(layout["wrapped_text"])
+    return text_file
+
+
+def render_text_image(
+    output_path: Path,
+    layout: Dict[str, Any],
+    width: int,
+    height: int,
+) -> None:
+    image = Image.new("RGB", (width, height), color="black")
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.truetype(str(overlay_font_path()), layout["font_size"])
+    line_step = layout["font_size"] + layout["line_spacing"]
+    lines = layout["wrapped_text"].split("\n")
+    total_text_height = len(lines) * line_step - layout["line_spacing"]
+    start_y = max(0, (height - total_text_height) // 2)
+    block_x = layout.get("side_padding", max(24, min(60, width // 20)))
+
+    for idx, line in enumerate(lines):
+        if not line:
+            continue
+        y = start_y + idx * line_step
+        bbox = draw.textbbox((0, 0), line, font=font)
+        draw.text((block_x - bbox[0], y - bbox[1]), line, font=font, fill="white")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(output_path)
+
+
+def render_text_panel_image(out_dir: Path, text: str, width: int, height: int) -> Tuple[Path, Dict[str, Any]]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    layout = overlay_layout(width, height, text)
+    text_file = out_dir / "post_text.txt"
+    caption_png = out_dir / "caption.png"
+
+    with text_file.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(layout["wrapped_text"])
+
+    render_text_image(caption_png, layout, width, layout["caption_height"])
+    return caption_png, layout
+
+
+def video_to_hls_with_text(
+    video: Path,
+    out_dir: Path,
+    stream_id: str,
+    text: str,
+    width: int = 1280,
+    height: int = 720,
+    segment_time: Optional[int] = None,
+):
+    m3u8 = out_dir / "index.m3u8"
+    hls = hls_opts_with_segment_time(segment_time)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    caption_image, layout = render_text_panel_image(out_dir, text, width, height)
+    layout, filter_complex = media_with_text_filter_complex(width, height, text, 0, 1)
+
+    cmd = [
+        config.FFMPEG, "-y",
+        "-i", str(video),
+        "-loop", "1",
+        "-i", str(caption_image),
+        "-sn",
+        "-dn",
+        "-filter_complex", filter_complex,
+        "-map", "[final]",
+        "-map", "0:a:0?",
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "16",
+        "-profile:v", "high",
+        "-level", "4.2",
+        "-pix_fmt", "yuv420p",
+        *ffmpeg_audio_params(),
+        "-shortest",
+        "-f", "hls",
+        "-hls_time", str(hls.get("hls_time", 4)),
+        "-hls_list_size", str(hls.get("hls_list_size", 0)),
+        "-hls_playlist_type", hls.get("hls_playlist_type", "vod"),
+        "-hls_flags", hls.get("hls_flags", "independent_segments"),
+        "-hls_base_url", f"/streams/{stream_id}/",
+        str(m3u8)
+    ]
+    run_cmd(cmd)
+
+
+def image_to_hls_with_text(
+    image: Path,
+    out_dir: Path,
+    stream_id: str,
+    text: str,
+    duration: int,
+    width: int,
+    height: int,
+    segment_time: Optional[int] = None,
+):
+    m3u8 = out_dir / "index.m3u8"
+    hls = hls_opts_with_segment_time(segment_time)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    caption_image, layout = render_text_panel_image(out_dir, text, width, height)
+    layout, filter_complex = media_with_text_filter_complex(width, height, text, 0, 2)
+
+    cmd = [
+        config.FFMPEG, "-y",
+        "-loop", "1",
+        "-i", str(image),
+        "-f", "lavfi",
+        "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+        "-loop", "1",
+        "-i", str(caption_image),
+        "-t", str(duration),
+        "-filter_complex", filter_complex,
+        "-map", "[final]",
+        "-map", "1:a:0",
+        "-pix_fmt", "yuv420p",
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "16",
+        "-profile:v", "high",
+        "-level", "4.2",
+        *ffmpeg_audio_params(),
+        "-shortest",
+        "-f", "hls",
+        "-hls_time", str(hls.get("hls_time", 4)),
+        "-hls_list_size", str(hls.get("hls_list_size", 0)),
+        "-hls_playlist_type", hls.get("hls_playlist_type", "vod"),
+        "-hls_flags", hls.get("hls_flags", "independent_segments"),
+        "-hls_base_url", f"/streams/{stream_id}/",
+        str(m3u8)
+    ]
+    run_cmd(cmd)
+
+
+def text_to_hls(
+    out_dir: Path,
+    stream_id: str,
+    text: str,
+    duration: int = 300,
+    width: int = 1280,
+    height: int = 720,
+    segment_time: Optional[int] = None,
+):
+    m3u8 = out_dir / "index.m3u8"
+    hls = hls_opts_with_segment_time(segment_time)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    layout = overlay_layout(width, height, text)
+    text_file = out_dir / "post_text.txt"
+    text_png = out_dir / "text_only.png"
+    with text_file.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(layout["wrapped_text"])
+    render_text_image(text_png, layout, width, height)
+
+    cmd = [
+        config.FFMPEG, "-y",
+        "-loop", "1",
+        "-i", str(text_png),
+        "-f", "lavfi",
+        "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+        "-t", str(duration),
+        "-shortest",
+        "-pix_fmt", "yuv420p",
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "16",
+        "-profile:v", "high",
+        "-level", "4.2",
+        *ffmpeg_audio_params(),
+        "-f", "hls",
+        "-hls_time", str(hls.get("hls_time", 4)),
+        "-hls_list_size", str(hls.get("hls_list_size", 0)),
+        "-hls_playlist_type", hls.get("hls_playlist_type", "vod"),
+        "-hls_flags", hls.get("hls_flags", "independent_segments"),
+        "-hls_base_url", f"/streams/{stream_id}/",
+        str(m3u8),
+    ]
+    run_cmd(cmd)
+
+
 # =========================
 # IMAGE → HLS (ОРКЕСТРАТОР)
 # =========================
@@ -364,6 +676,40 @@ def build_hls_from_image(
             mp4.unlink()
         except Exception:
             pass
+
+    if not wait_hls_ready(out_dir):
+        raise HTTPException(500, "HLS build timeout")
+
+
+def build_hls_from_image_with_text(
+    image_url: str,
+    stream_id: str,
+    text: str,
+    duration: int = 300,
+    width: int = 1280,
+    height: int = 720,
+    segment_time: Optional[int] = None,
+):
+    out_dir = config.STREAMS / stream_id
+
+    if is_hls_output_ready(out_dir):
+        return
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    src_suffix = ".gif" if is_probably_gif_source(image_url) else ".jpg"
+    download_limit = 256 * 1024 * 1024 if src_suffix == ".gif" else 8 * 1024 * 1024
+    img = out_dir / f"src{src_suffix}"
+
+    if Path(image_url).exists():
+        copyfile(image_url, img)
+    else:
+        download_file(image_url, img, max_bytes=download_limit)
+
+    if is_gif_file(img):
+        video_to_hls_with_text(img, out_dir, stream_id, text, width, height, segment_time=segment_time)
+    else:
+        image_to_hls_with_text(img, out_dir, stream_id, text, duration, width, height, segment_time=segment_time)
 
     if not wait_hls_ready(out_dir):
         raise HTTPException(500, "HLS build timeout")

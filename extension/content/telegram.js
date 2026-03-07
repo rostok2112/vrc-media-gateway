@@ -1,6 +1,7 @@
 (() => {
   const MENU_CLASS = "MessageContextMenu_items";
   const ITEM_CLASS = "vrchat-tg-menu-item";
+  const ITEM_WITH_TEXT_CLASS = "vrchat-tg-menu-item-with-text";
   const POPUP_ID = "vrchat-popup";
   const TELEGRAM_BUILD_POLL_MS = 2000;
   const TELEGRAM_BUILD_MAX_WAIT_MS = 15 * 60 * 1000;
@@ -136,8 +137,60 @@
     });
   }
 
-  async function waitForTelegramReady(postUrl) {
-    const endpoint = "/api/stream-tg-media?url=" + encodeURIComponent(postUrl);
+  function messageHasTextContent(message) {
+    if (!message) return false;
+
+    const selectors = [
+      ".text-content",
+      ".message-content",
+      ".translatable-message",
+      ".MessageText",
+      ".message",
+      ".text",
+      ".message-text",
+      ".quote-text"
+    ];
+
+    for (const selector of selectors) {
+      for (const node of message.querySelectorAll(selector)) {
+        const text = (node.innerText || node.textContent || "").trim();
+        if (text) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  function messageHasStreamableMedia(message) {
+    if (!message) return false;
+
+    const mediaSelectors = [
+      ".media-inner",
+      ".MessageMedia",
+      ".album-item",
+      ".Document",
+      ".document-container",
+      ".EmbeddedMessage",
+      ".full-media",
+      ".video-player",
+      ".video-content",
+      ".audio",
+      ".AudioPlayer",
+      "video",
+      "audio"
+    ];
+
+    return mediaSelectors.some(selector => Boolean(message.querySelector(selector)));
+  }
+
+  async function waitForTelegramReady(postUrl, withText = false) {
+    const params = new URLSearchParams({ url: postUrl });
+    if (withText) {
+      params.set("with_text", "1");
+    }
+    const endpoint = "/api/stream-tg-media?" + params.toString();
     const start = await sendMessage({
       action: "startTelegramBuild",
       endpoint,
@@ -176,7 +229,7 @@
     throw new Error("Timed out waiting for Telegram stream to be ready");
   }
 
-  async function handleMenuClick() {
+  async function handleMenuClick(withText = false) {
     popupLoading();
 
     try {
@@ -192,28 +245,28 @@
         postUrl = publicBase.replace(/\/$/, "") + "/" + messageId;
       }
 
-      const readyUrl = await waitForTelegramReady(postUrl);
+      const readyUrl = await waitForTelegramReady(postUrl, withText);
       popupResult(readyUrl);
     } catch (e) {
       popupError(e?.message || "Failed to resolve message");
     }
   }
 
-  function createMenuItem() {
+  function createMenuItem(label, className, withText = false) {
     const item = document.createElement("div");
-    item.className = "MenuItem compact " + ITEM_CLASS;
+    item.className = "MenuItem compact " + className;
     item.setAttribute("role", "menuitem");
     item.tabIndex = 0;
     item.innerHTML = `
       <i class="icon icon-link" aria-hidden="true"></i>
-      <span>VRChat</span>
+      <span>${label}</span>
     `;
     item.addEventListener(
       "mousedown",
       e => {
         e.preventDefault();
         e.stopImmediatePropagation();
-        handleMenuClick();
+        handleMenuClick(withText);
       },
       true
     );
@@ -221,12 +274,38 @@
   }
 
   function insertIfNeeded(menu) {
-    if (menu.querySelector("." + ITEM_CLASS)) return;
+    if (menu.querySelector("." + ITEM_CLASS) || menu.querySelector("." + ITEM_WITH_TEXT_CLASS)) return;
+    const hasMedia = messageHasStreamableMedia(lastContextMessage);
+    const hasText = messageHasTextContent(lastContextMessage);
+    if (!hasMedia && !hasText) return;
+
     const copy = [...menu.children].find(el =>
       (el.textContent || "").includes("Копіювати")
     );
-    const btn = createMenuItem();
-    copy ? copy.after(btn) : menu.appendChild(btn);
+
+    const items = [];
+    if (hasMedia) {
+      items.push(createMenuItem("VRChat", ITEM_CLASS, false));
+    }
+    if (hasText) {
+      items.push(createMenuItem("VRChat with post text", ITEM_WITH_TEXT_CLASS, true));
+    }
+
+    if (!items.length) {
+      return;
+    }
+
+    if (copy) {
+      let anchor = copy;
+      for (const item of items) {
+        anchor.after(item);
+        anchor = item;
+      }
+      return;
+    }
+    for (const item of items) {
+      menu.appendChild(item);
+    }
   }
 
   new MutationObserver(() => {

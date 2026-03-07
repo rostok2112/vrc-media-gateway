@@ -120,6 +120,12 @@ async def get_tg_post_media_kind(url: str) -> Optional[str]:
     return classify_tg_message(msg)
 
 
+async def get_tg_post_text(url: str) -> str:
+    msg = await get_tg_message(url)
+    text = getattr(msg, "raw_text", None) or getattr(msg, "message", None) or ""
+    return str(text).strip()
+
+
 def html_contains_tg_video(html: str) -> bool:
     return bool(_TG_VIDEO_HTML_RE.search(html))
 

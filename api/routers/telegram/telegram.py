@@ -58,6 +58,62 @@ def _tg_video_sid(url: str, segment_time: Optional[int] = None) -> str:
     return utils.video_stream_sid(url, "telegram", segment_time=segment_time)
 
 
+def _tg_video_text_sid(
+    url: str,
+    text: str,
+    width: int,
+    height: int,
+    segment_time: Optional[int] = None,
+) -> str:
+    return utils.sid_for_url(
+        url,
+        "telegram",
+        "video",
+        utils.POST_TEXT_EXPORT_LAYOUT_VERSION,
+        utils.text_cache_part(text),
+        utils.hls_segment_cache_part(segment_time),
+        f"{width}x{height}",
+    )
+
+
+def _tg_image_text_sid(
+    url: str,
+    text: str,
+    duration: int,
+    width: int,
+    height: int,
+    segment_time: Optional[int] = None,
+) -> str:
+    return utils.sid_for_url(
+        url,
+        "telegram",
+        "image",
+        utils.POST_TEXT_EXPORT_LAYOUT_VERSION,
+        utils.text_cache_part(text),
+        utils.hls_segment_cache_part(segment_time),
+        f"{duration}{width}x{height}",
+    )
+
+
+def _tg_text_only_sid(
+    url: str,
+    text: str,
+    duration: int,
+    width: int,
+    height: int,
+    segment_time: Optional[int] = None,
+) -> str:
+    return utils.sid_for_url(
+        url,
+        "telegram",
+        "text-only",
+        utils.POST_TEXT_EXPORT_LAYOUT_VERSION,
+        utils.text_cache_part(text),
+        utils.hls_segment_cache_part(segment_time),
+        f"{duration}{width}x{height}",
+    )
+
+
 def _tg_build_job_id(
     url: str,
     duration: int,
@@ -65,7 +121,18 @@ def _tg_build_job_id(
     height: int,
     media_kind: Optional[str] = None,
     segment_time: Optional[int] = None,
+    caption_text: str = "",
 ) -> str:
+    if caption_text:
+        return utils.sid_for_url(
+            url,
+            "tg-build",
+            media_kind or "media",
+            utils.POST_TEXT_EXPORT_LAYOUT_VERSION,
+            utils.text_cache_part(caption_text),
+            utils.hls_segment_cache_part(segment_time),
+            f"{duration}{width}x{height}",
+        )
     if media_kind == "video":
         return utils.video_build_job_id(url, "tg-build", "telegram", segment_time=segment_time)
     return utils.image_build_job_id(
@@ -91,10 +158,68 @@ def _job_snapshot(job_id: str) -> Optional[Dict[str, Any]]:
     return snapshot
 
 
-async def _ensure_tg_video_stream(url: str, segment_time: Optional[int] = None) -> str:
+async def _resolve_post_text(url: str, with_text: bool) -> str:
+    if not with_text:
+        return ""
+
+    try:
+        return utils.normalize_overlay_text(await telegram_utils.get_tg_post_text(url))
+    except Exception as e:
+        print("Telegram post text fetch failed, keeping plain media flow:", e)
+        return ""
+
+
+async def _ensure_tg_text_only_stream(
+    url: str,
+    caption_text: str,
+    duration: int,
+    width: int,
+    height: int,
+    segment_time: Optional[int] = None,
+) -> str:
+    caption_text = utils.normalize_overlay_text(caption_text)
+    if not caption_text:
+        raise HTTPException(status_code=404, detail="telegram post has no text")
+
+    segment_time = utils.normalize_hls_segment_time(segment_time)
+    sid = _tg_text_only_sid(url, caption_text, duration, width, height, segment_time)
+    out_dir = config.STREAMS / sid
+
+    if _is_hls_ready(sid):
+        return sid
+
+    await asyncio.to_thread(
+        utils.text_to_hls,
+        out_dir,
+        sid,
+        caption_text,
+        duration,
+        width,
+        height,
+        segment_time,
+    )
+
+    if not _is_hls_ready(sid):
+        raise HTTPException(status_code=500, detail="telegram text-only HLS build failed")
+
+    return sid
+
+
+async def _ensure_tg_video_stream(
+    url: str,
+    segment_time: Optional[int] = None,
+    width: int = 1280,
+    height: int = 720,
+    caption_text: str = "",
+) -> str:
     url = _normalize_tg_url(url)
     segment_time = utils.normalize_hls_segment_time(segment_time)
-    sid = _tg_video_sid(url, segment_time)
+    caption_text = utils.normalize_overlay_text(caption_text)
+    sid = (
+        _tg_video_text_sid(url, caption_text, width, height, segment_time)
+        if caption_text
+        else _tg_video_sid(url, segment_time)
+    )
     out_dir = config.STREAMS / sid
 
     if _is_hls_ready(sid):
@@ -102,7 +227,19 @@ async def _ensure_tg_video_stream(url: str, segment_time: Optional[int] = None) 
 
     out_dir.mkdir(parents=True, exist_ok=True)
     video = await telegram_utils.download_tg_video(url)
-    await asyncio.to_thread(utils.video_to_hls, video, out_dir, sid, segment_time)
+    if caption_text:
+        await asyncio.to_thread(
+            utils.video_to_hls_with_text,
+            video,
+            out_dir,
+            sid,
+            caption_text,
+            width,
+            height,
+            segment_time,
+        )
+    else:
+        await asyncio.to_thread(utils.video_to_hls, video, out_dir, sid, segment_time)
 
     if not _is_hls_ready(sid):
         raise HTTPException(status_code=500, detail="telegram video HLS build failed")
@@ -117,9 +254,11 @@ async def _ensure_tg_image_stream(
     height: int,
     media_kind: Optional[str] = None,
     segment_time: Optional[int] = None,
+    caption_text: str = "",
 ) -> str:
     url = _normalize_tg_url(url)
     segment_time = utils.normalize_hls_segment_time(segment_time)
+    caption_text = utils.normalize_overlay_text(caption_text)
 
     if media_kind is None:
         try:
@@ -129,23 +268,39 @@ async def _ensure_tg_image_stream(
 
     if media_kind == "video":
         print("Telegram post is a video, routing image endpoint to video pipeline")
-        return await _ensure_tg_video_stream(url, segment_time)
+        return await _ensure_tg_video_stream(url, segment_time, width, height, caption_text)
 
-    sid = utils.image_stream_sid(url, duration, width, height, segment_time)
+    sid = (
+        _tg_image_text_sid(url, caption_text, duration, width, height, segment_time)
+        if caption_text
+        else utils.image_stream_sid(url, duration, width, height, segment_time)
+    )
     if _is_hls_ready(sid):
         return sid
 
     try:
         img = await telegram_utils.download_tg_photo(url)
-        await asyncio.to_thread(
-            utils.build_hls_from_image,
-            str(img),
-            sid,
-            duration,
-            width,
-            height,
-            segment_time,
-        )
+        if caption_text:
+            await asyncio.to_thread(
+                utils.build_hls_from_image_with_text,
+                str(img),
+                sid,
+                caption_text,
+                duration,
+                width,
+                height,
+                segment_time,
+            )
+        else:
+            await asyncio.to_thread(
+                utils.build_hls_from_image,
+                str(img),
+                sid,
+                duration,
+                width,
+                height,
+                segment_time,
+            )
         if not _is_hls_ready(sid):
             raise HTTPException(status_code=500, detail="telegram photo HLS build failed")
         return sid
@@ -158,33 +313,62 @@ async def _ensure_tg_image_stream(
         raise HTTPException(400, f"fetch html failed: {e}")
 
     if telegram_utils.html_contains_tg_video(html):
-        raise HTTPException(409, "telegram post contains video; use /api/stream-tg-video")
+        return await _ensure_tg_video_stream(url, segment_time, width, height, caption_text)
 
     img_url = utils.extract_image_from_html(html, base_url=final)
     if not img_url:
+        fallback_text = caption_text
+        if not fallback_text:
+            try:
+                fallback_text = utils.normalize_overlay_text(await telegram_utils.get_tg_post_text(url))
+            except Exception as e:
+                print("Telegram post text fetch failed during text-only fallback:", e)
+                fallback_text = ""
+
+        if fallback_text:
+            return await _ensure_tg_text_only_stream(
+                url,
+                fallback_text,
+                duration,
+                width,
+                height,
+                segment_time,
+            )
         raise HTTPException(404, "no image found in telegram post")
 
     if img_url.startswith("//"):
         img_url = "https:" + img_url
 
-    img_sid = utils.image_stream_sid(img_url, duration, width, height, segment_time)
-    if _is_hls_ready(img_sid):
-        return img_sid
+    build_source = img_url
+    if _is_hls_ready(sid):
+        return sid
 
-    await asyncio.to_thread(
-        utils.build_hls_from_image,
-        img_url,
-        img_sid,
-        duration,
-        width,
-        height,
-        segment_time,
-    )
+    if caption_text:
+        await asyncio.to_thread(
+            utils.build_hls_from_image_with_text,
+            build_source,
+            sid,
+            caption_text,
+            duration,
+            width,
+            height,
+            segment_time,
+        )
+    else:
+        await asyncio.to_thread(
+            utils.build_hls_from_image,
+            build_source,
+            sid,
+            duration,
+            width,
+            height,
+            segment_time,
+        )
 
-    if not _is_hls_ready(img_sid):
+    if not _is_hls_ready(sid):
         raise HTTPException(status_code=500, detail="telegram fallback image HLS build failed")
 
-    return img_sid
+    return sid
 
 
 async def _run_tg_build_job(
@@ -195,6 +379,7 @@ async def _run_tg_build_job(
     height: int,
     media_kind: Optional[str],
     segment_time: Optional[int],
+    caption_text: str,
 ) -> None:
     job = _TG_BUILD_JOBS[job_id]
     job["state"] = "running"
@@ -202,7 +387,7 @@ async def _run_tg_build_job(
 
     try:
         if media_kind == "video":
-            result_sid = await _ensure_tg_video_stream(url, segment_time)
+            result_sid = await _ensure_tg_video_stream(url, segment_time, width, height, caption_text)
         else:
             result_sid = await _ensure_tg_image_stream(
                 url,
@@ -211,6 +396,7 @@ async def _run_tg_build_job(
                 height,
                 media_kind=media_kind,
                 segment_time=segment_time,
+                caption_text=caption_text,
             )
 
         job["state"] = "ready"
@@ -231,10 +417,12 @@ async def _ensure_tg_build_job(
     height: int,
     media_kind: Optional[str],
     segment_time: Optional[int] = None,
+    caption_text: str = "",
 ) -> Dict[str, Any]:
     url = _normalize_tg_url(url)
     segment_time = utils.normalize_hls_segment_time(segment_time)
-    job_id = _tg_build_job_id(url, duration, width, height, media_kind, segment_time)
+    caption_text = utils.normalize_overlay_text(caption_text)
+    job_id = _tg_build_job_id(url, duration, width, height, media_kind, segment_time, caption_text)
 
     async with _TG_BUILD_LOCK:
         job = _TG_BUILD_JOBS.setdefault(
@@ -247,6 +435,7 @@ async def _ensure_tg_build_job(
                 "height": height,
                 "media_kind": media_kind,
                 "segment_time": segment_time,
+                "caption_text": caption_text,
                 "state": "pending",
                 "result_sid": None,
                 "error": None,
@@ -255,9 +444,25 @@ async def _ensure_tg_build_job(
         if media_kind and not job.get("media_kind"):
             job["media_kind"] = media_kind
         job["segment_time"] = segment_time
+        job["caption_text"] = caption_text
 
         if media_kind == "video":
-            sid = _tg_video_sid(url, segment_time)
+            sid = (
+                _tg_video_text_sid(url, caption_text, width, height, segment_time)
+                if caption_text
+                else _tg_video_sid(url, segment_time)
+            )
+            if _is_hls_ready(sid):
+                job["state"] = "ready"
+                job["result_sid"] = sid
+                job["error"] = None
+                return _job_snapshot(job_id)
+        elif caption_text:
+            sid = (
+                _tg_image_text_sid(url, caption_text, duration, width, height, segment_time)
+                if media_kind
+                else _tg_text_only_sid(url, caption_text, duration, width, height, segment_time)
+            )
             if _is_hls_ready(sid):
                 job["state"] = "ready"
                 job["result_sid"] = sid
@@ -283,6 +488,7 @@ async def _ensure_tg_build_job(
                 height,
                 job.get("media_kind"),
                 segment_time,
+                job.get("caption_text", ""),
             )
         )
         return _job_snapshot(job_id)
@@ -295,6 +501,7 @@ async def stream_tg_build_start(
     width: int = Query(1280),
     height: int = Query(720),
     segment_time: int | None = Query(default=None, ge=1),
+    with_text: bool = Query(default=False),
 ):
     url = _normalize_tg_url(url)
 
@@ -304,7 +511,8 @@ async def stream_tg_build_start(
         media_kind = None
         print("Telethon media inspect failed, defaulting to image build job:", e)
 
-    return await _ensure_tg_build_job(url, duration, width, height, media_kind, segment_time)
+    caption_text = await _resolve_post_text(url, with_text)
+    return await _ensure_tg_build_job(url, duration, width, height, media_kind, segment_time, caption_text)
 
 
 @router.get("/stream-tg-build-status")
@@ -315,8 +523,38 @@ async def stream_tg_build_status(job_id: str = Query(...)):
     return snapshot
 
 
-async def _stream_tg_video_impl(url: str, segment_time: Optional[int] = None) -> Response:
-    sid = await _ensure_tg_video_stream(url, segment_time)
+@router.get("/tg-post-info")
+async def tg_post_info(url: str = Query(...)):
+    url = _normalize_tg_url(url)
+
+    try:
+        media_kind = await telegram_utils.get_tg_post_media_kind(url)
+    except Exception as e:
+        media_kind = None
+        print("Telegram media inspect failed for tg-post-info:", e)
+
+    try:
+        post_text = utils.normalize_overlay_text(await telegram_utils.get_tg_post_text(url))
+    except Exception as e:
+        post_text = ""
+        print("Telegram text fetch failed for tg-post-info:", e)
+
+    return {
+        "url": url,
+        "media_kind": media_kind,
+        "has_text": bool(post_text),
+        "is_text_only": not media_kind and bool(post_text),
+    }
+
+
+async def _stream_tg_video_impl(
+    url: str,
+    segment_time: Optional[int] = None,
+    width: int = 1280,
+    height: int = 720,
+    caption_text: str = "",
+) -> Response:
+    sid = await _ensure_tg_video_stream(url, segment_time, width, height, caption_text)
     return _hls_response(sid)
 
 
@@ -327,6 +565,7 @@ async def _stream_tg_image_impl(
     height: int,
     media_kind: Optional[str] = None,
     segment_time: Optional[int] = None,
+    caption_text: str = "",
 ) -> Response:
     sid = await _ensure_tg_image_stream(
         url,
@@ -335,6 +574,7 @@ async def _stream_tg_image_impl(
         height,
         media_kind=media_kind,
         segment_time=segment_time,
+        caption_text=caption_text,
     )
     return _hls_response(sid)
 
@@ -346,6 +586,7 @@ async def stream_tg_media(
     width: int = Query(1280),
     height: int = Query(720),
     segment_time: int | None = Query(default=None, ge=1),
+    with_text: bool = Query(default=False),
 ):
     try:
         media_kind = await telegram_utils.get_tg_post_media_kind(url)
@@ -353,8 +594,9 @@ async def stream_tg_media(
         media_kind = None
         print("Telethon media inspect failed, defaulting to image flow:", e)
 
+    caption_text = await _resolve_post_text(url, with_text)
     if media_kind == "video":
-        return await _stream_tg_video_impl(url, segment_time)
+        return await _stream_tg_video_impl(url, segment_time, width, height, caption_text)
 
     return await _stream_tg_image_impl(
         url,
@@ -363,6 +605,7 @@ async def stream_tg_media(
         height,
         media_kind=media_kind,
         segment_time=segment_time,
+        caption_text=caption_text,
     )
 
 
@@ -373,16 +616,29 @@ async def stream_tg_image(
     width: int = Query(1280),
     height: int = Query(720),
     segment_time: int | None = Query(default=None, ge=1),
+    with_text: bool = Query(default=False),
 ):
-    return await _stream_tg_image_impl(url, duration, width, height, segment_time=segment_time)
+    caption_text = await _resolve_post_text(url, with_text)
+    return await _stream_tg_image_impl(
+        url,
+        duration,
+        width,
+        height,
+        segment_time=segment_time,
+        caption_text=caption_text,
+    )
 
 
 @router.get("/stream-tg-video")
 async def stream_tg_video(
     url: str = Query(...),
     segment_time: int | None = Query(default=None, ge=1),
+    width: int = Query(1280),
+    height: int = Query(720),
+    with_text: bool = Query(default=False),
 ):
-    return await _stream_tg_video_impl(url, segment_time)
+    caption_text = await _resolve_post_text(url, with_text)
+    return await _stream_tg_video_impl(url, segment_time, width, height, caption_text)
 
 
 @router.get("/resolve-tg-public-link")

@@ -167,6 +167,27 @@ function endpointQuery(endpoint) {
   return idx >= 0 ? endpoint.slice(idx) : "";
 }
 
+async function fetchTelegramPostInfo(url) {
+  const { fetchBase: resolvedFetchBase, localBase } = await resolveBases();
+  let processBase = resolvedFetchBase;
+
+  if (localBase && resolvedFetchBase !== localBase) {
+    if (await canUseLocalBuildBase(localBase)) {
+      processBase = localBase;
+    }
+  }
+  if (!processBase) {
+    throw new Error("No fetch base available");
+  }
+
+  const fetchUrl = `${processBase}/api/tg-post-info?url=${encodeURIComponent(String(url || "").trim())}`;
+  const res = await fetchWithGrace(fetchUrl, 10000);
+  if (!res.ok) {
+    throw new Error(await parseErrorResponse(res));
+  }
+  return await res.json();
+}
+
 function shouldApplyStreamingSettings(endpoint) {
   if (typeof endpoint !== "string") return false;
   return (
@@ -601,10 +622,19 @@ async function buildSpotifyQuickLink(src) {
   return `${base.replace(/\/$/, "")}/api/stream-spotify?url=${encodeURIComponent(src)}`;
 }
 
-function buildManagedEndpointForSource(src) {
+async function buildManagedEndpointForSource(src) {
   if (/^https?:\/\/t\.me\//.test(src)) {
+    let endpoint = "/api/stream-tg-media?url=" + encodeURIComponent(src);
+    try {
+      const info = await fetchTelegramPostInfo(src);
+      if (info && info.is_text_only) {
+        endpoint += "&with_text=1";
+      }
+    } catch (e) {
+      console.log("[bg] fetchTelegramPostInfo error:", e && e.message);
+    }
     return {
-      endpoint: "/api/stream-tg-media?url=" + encodeURIComponent(src),
+      endpoint,
       sourceKind: "telegram",
       sourceLabel: src
     };
@@ -723,7 +753,7 @@ async function startQuickLinkJob(msg) {
     return state;
   }
 
-  const managed = buildManagedEndpointForSource(src);
+  const managed = await buildManagedEndpointForSource(src);
   await setQuickLinkJobState(quickLinkStateBase({
     status: "starting",
     sourceKind: managed.sourceKind,

@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import logging
 import subprocess
 import urllib.parse as urlparse
@@ -46,11 +45,11 @@ def normalize_yt_url(url: str) -> str:
 
 
 def _yt_sid(norm_url: str) -> str:
-    return hashlib.md5(norm_url.encode()).hexdigest()
+    return utils.video_stream_sid(norm_url, "yt")
 
 
 def _yt_job_id(norm_url: str) -> str:
-    return hashlib.md5(f"yt-build|{norm_url}".encode()).hexdigest()
+    return utils.video_build_job_id(norm_url, "yt-build", "yt")
 
 
 def _stream_path_for_sid(sid: str) -> str:

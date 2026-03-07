@@ -209,6 +209,8 @@ def _normalize_local_path(raw_path: str) -> Path:
 
 def _local_media_sid(source_key: str, media_kind: str, duration: int, width: int, height: int) -> str:
     parts = [LOCAL_MEDIA_BUILD_VERSION, media_kind]
+    if media_kind == "video":
+        parts.append(utils.VIDEO_HLS_LAYOUT_VERSION)
     if media_kind == "image":
         parts.append(f"{duration}")
         parts.append(f"{width}x{height}")
@@ -217,6 +219,8 @@ def _local_media_sid(source_key: str, media_kind: str, duration: int, width: int
 
 def _local_media_job_id(source_key: str, media_kind: str, duration: int, width: int, height: int) -> str:
     parts = ["local-media-build", LOCAL_MEDIA_BUILD_VERSION, media_kind]
+    if media_kind == "video":
+        parts.append(utils.VIDEO_HLS_LAYOUT_VERSION)
     if media_kind == "image":
         parts.append(f"{duration}")
         parts.append(f"{width}x{height}")

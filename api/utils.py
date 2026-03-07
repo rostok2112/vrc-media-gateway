@@ -29,6 +29,7 @@ from api.segments_engine import registry
 logger = logging.getLogger(__name__)
 
 IMAGE_EXPORT_LAYOUT_VERSION = "fit-pad-v1"
+VIDEO_HLS_LAYOUT_VERSION = "video-h264-v2"
 
 
 # =========================
@@ -124,6 +125,44 @@ def ffmpeg_audio_params() -> List[str]:
     return args
 
 
+def ffprobe_binary() -> str:
+    ffmpeg_path = Path(config.FFMPEG)
+    if ffmpeg_path.suffix.lower() == ".exe":
+        sibling = ffmpeg_path.with_name("ffprobe.exe")
+        if sibling.exists():
+            return str(sibling)
+        return "ffprobe.exe"
+    sibling = ffmpeg_path.with_name("ffprobe")
+    if sibling.exists():
+        return str(sibling)
+    return "ffprobe"
+
+
+def probe_primary_video_codec(path: Path) -> str:
+    try:
+        probe = subprocess.run(
+            [
+                ffprobe_binary(),
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception:
+        return ""
+
+    if probe.returncode != 0:
+        return ""
+
+    return (probe.stdout or "").strip().splitlines()[0].strip().lower() if probe.stdout else ""
+
+
 # =========================
 # IMAGE → MP4
 # =========================
@@ -168,16 +207,42 @@ def image_to_mp4(
 def video_to_hls(video: Path, out_dir: Path, stream_id: str):
     m3u8 = out_dir / "index.m3u8"
     hls = config.HLS_OPTS
+    video_codec = probe_primary_video_codec(video)
+    video_args: List[str]
+
+    if video_codec == "h264":
+        video_args = [
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-sn",
+            "-dn",
+            "-c:v", "copy",
+        ]
+    else:
+        # Re-encode non-H.264 sources so MPEG-TS HLS carries a broadly compatible video stream.
+        video_args = [
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-sn",
+            "-dn",
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-profile:v", "high",
+            "-level", "4.2",
+            "-pix_fmt", "yuv420p",
+        ]
 
     cmd = [
         config.FFMPEG, "-y",
         "-i", str(video),
-        "-c:v", "copy",
+        *video_args,
         *ffmpeg_audio_params(),
         "-f", "hls",
         "-hls_time", str(hls.get("hls_time", 4)),
         "-hls_list_size", str(hls.get("hls_list_size", 0)),
         "-hls_playlist_type", hls.get("hls_playlist_type", "vod"),
+        "-hls_flags", hls.get("hls_flags", "independent_segments"),
         "-hls_base_url", f"/streams/{stream_id}/",
         str(m3u8)
     ]
@@ -299,6 +364,14 @@ def image_stream_sid(url: str, duration: int, width: int, height: int) -> str:
 
 def image_build_job_id(url: str, duration: int, width: int, height: int, scope: str = "img-build") -> str:
     return sid_for_url(url, scope, IMAGE_EXPORT_LAYOUT_VERSION, f"{duration}{width}x{height}")
+
+
+def video_stream_sid(url: str, *extra_parts) -> str:
+    return sid_for_url(url, VIDEO_HLS_LAYOUT_VERSION, *extra_parts)
+
+
+def video_build_job_id(url: str, scope: str = "video-build", *extra_parts) -> str:
+    return sid_for_url(url, scope, VIDEO_HLS_LAYOUT_VERSION, *extra_parts)
 
 def out_dir_for_sid(sid: str) -> Path:
     return config.STREAMS / sid

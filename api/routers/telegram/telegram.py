@@ -54,7 +54,13 @@ def _is_hls_ready(sid: str) -> bool:
     return utils.is_hls_output_ready(config.STREAMS / sid)
 
 
-def _tg_build_job_id(url: str, duration: int, width: int, height: int) -> str:
+def _tg_video_sid(url: str) -> str:
+    return utils.video_stream_sid(url, "telegram")
+
+
+def _tg_build_job_id(url: str, duration: int, width: int, height: int, media_kind: Optional[str] = None) -> str:
+    if media_kind == "video":
+        return utils.video_build_job_id(url, "tg-build", "telegram")
     return utils.image_build_job_id(url, duration, width, height, scope="tg-build")
 
 
@@ -73,9 +79,8 @@ def _job_snapshot(job_id: str) -> Optional[Dict[str, Any]]:
 
 async def _ensure_tg_video_stream(url: str) -> str:
     url = _normalize_tg_url(url)
-    sid = utils.sid_for_url(url)
+    sid = _tg_video_sid(url)
     out_dir = config.STREAMS / sid
-    m3u8 = out_dir / "index.m3u8"
 
     if _is_hls_ready(sid):
         return sid
@@ -206,7 +211,7 @@ async def _ensure_tg_build_job(
     media_kind: Optional[str],
 ) -> Dict[str, Any]:
     url = _normalize_tg_url(url)
-    job_id = _tg_build_job_id(url, duration, width, height)
+    job_id = _tg_build_job_id(url, duration, width, height, media_kind)
 
     async with _TG_BUILD_LOCK:
         job = _TG_BUILD_JOBS.setdefault(
@@ -227,7 +232,7 @@ async def _ensure_tg_build_job(
             job["media_kind"] = media_kind
 
         if media_kind == "video":
-            sid = utils.sid_for_url(url)
+            sid = _tg_video_sid(url)
             if _is_hls_ready(sid):
                 job["state"] = "ready"
                 job["result_sid"] = sid

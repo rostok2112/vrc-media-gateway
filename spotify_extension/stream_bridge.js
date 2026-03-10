@@ -1,4 +1,4 @@
-// stream_bridge.js (Spicetify) — PORT of popup.js logic (manualGlobal preserved, Refresh, auto-detect via WS RPC, fallback fetch)
+// stream_bridge.js (Spicetify)
 (async function () {
   while (!window.Spicetify || !Spicetify.Player) await new Promise(r=>setTimeout(r,250));
   console.log("[stream_bridge] starting (popup logic port)");
@@ -160,7 +160,7 @@
     };
   }
 
-  // WS RPC helper (use existing WS connection)
+  // WS RPC helper
   let ws = null;
   let wsUrl = null;
   let reconnectTimer = null;
@@ -569,7 +569,6 @@
     extra.insertBefore(wrapper, extra.firstChild);
   }
 
-// невеликі допоміжні функції — якщо в твоєму файлі вже є, нічого не міняй
 function flashTemp(el, txt, ms = 900) {
   const prev = el.innerHTML;
   el.textContent = txt;

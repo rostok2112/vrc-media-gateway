@@ -86,7 +86,7 @@ async def stream_spotify(
     try:
         prefetch_ok = await registry.start_prefetch(sid, timeout=prefetch_timeout)
         if not prefetch_ok:
-            # prefetch timed out (if timeout provided) — still continue with redirect
+            # prefetch timed out (if timeout provided) still continue with redirect
             logger.info("prefetch timed out (cfg=%s) for %s — continuing", prefetch_timeout_cfg, sid)
     except Exception:
         logger.exception("start_prefetch failed — continuing")
@@ -133,7 +133,7 @@ async def segment(sid: str, filename: str):
         raise HTTPException(400, "bad filename")
     idx = int(filename.replace("segment_", "").replace(".ts", ""))
 
-    # Block until this segment exists — this is the real prefetch gating
+    # Block until this segment exists. This is the real prefetch gating
     try:
         await registry.ensure_segment(sid, idx)
     except Exception:

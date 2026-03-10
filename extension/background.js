@@ -1,5 +1,4 @@
-// background.js (patched)
-// Based on your original background with added resolveTgPublicLink and extra logging
+// background.js
 
 async function getSettings() {
   return await chrome.storage.sync.get({
@@ -1069,7 +1068,7 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
       return;
     }
 
-    // NEW: resolve public username for internal id via local API /api/resolve-tg-public-link
+    // Resolve public username for internal id via local API /api/resolve-tg-public-link
     if (msg.action === "resolveTgPublicLink") {
       try {
         console.log("[bg] resolveTgPublicLink ->", msg.internal);

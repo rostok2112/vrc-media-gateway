@@ -15,7 +15,7 @@
     );
   }
 
-  /* ---- New: detect if page is likely a single track page ---- */
+  /* ---- Detect if page is likely a single track page ---- */
   function isLikelyTrackPage() {
     try {
       const parts = location.pathname.split('/').filter(Boolean);
@@ -345,7 +345,7 @@
     return location.href;
   }
 
-  /* Popup UI (unchanged behaviour) */
+  /* Popup UI */
   function closePopup() {
     const el = document.getElementById(POPUP_ID);
     if (el) el.remove();
@@ -428,7 +428,7 @@
     }
   }
 
-  /* Button creation & insertion (unchanged) */
+  /* Button creation & insertion */
   function createButton() {
     const btn = document.createElement("button");
     btn.className = "sc-button-queue addToNextUp sc-button-secondary sc-button sc-button-medium sc-button-responsive " + BTN_CLASS;
